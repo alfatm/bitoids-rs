@@ -1,0 +1,30 @@
+[package]
+edition = "2021"
+name = "bitoids"
+version = "0.1.0"
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[dependencies]
+aabb-quadtree = "0.2.0"
+bevy = {git = "https://github.com/bevyengine/bevy", version = "0.8.0-dev", features = [
+  "dynamic",
+  "bevy_animation",
+  "bevy_core_pipeline",
+  "render",
+  "trace",
+  "bevy_render",
+  "bevy_sprite",
+  "bevy_text",
+  "bevy_ui",
+  "filesystem_watcher",
+  "png",
+  "jpeg",
+  "serialize",
+]}
+quadtree_rs = "0.1.2"
+rand = "0.8.5"
