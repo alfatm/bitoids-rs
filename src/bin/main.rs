@@ -13,20 +13,22 @@ use std::ops::Div;
 use std::ops::Mul;
 use std::ops::Sub;
 
-const MAX_VELOCITY: f32 = 2100.;
-const BIRD_SCALE: f32 = 0.28;
-const HALF_BIRD_SIZE: f32 = BIRD_SCALE * 0.5;
-const BIRD_SPRITE_SCALE: f32 = 6.0;
-const BIRD_MAX_FORCE: f32 = 3.0;
-const BIRD_MAX_VELOCITY: f32 = 1.0;
-const BIRD_MIN_VELOCITY: f32 = 0.5;
-const BIRD_COHESION: f32 = 30.0;
-const BIRD_SEPARATION: f32 = 5.0;
-const BIRD_PERCEPTION: f32 = 30.0;
-const BIRD_ALIGMENT: f32 = 2.0;
-const BIRD_SPEED: f32 = 100.0;
-const BIRD_ROTATION: f32 = 5.0;
-const BIRD_WAKE_PER_SECOND: u32 = 5;
+const MAX_VELOCITY: f32 = 2000.;
+const BOID_SCALE: f32 = 0.28;
+const HALF_BOID_SIZE: f32 = BOID_SCALE * 0.5;
+const BOID_SPRITE_SCALE: f32 = 6.0;
+const BOID_MAX_FORCE: f32 = 1.0;
+const BOID_MAX_VELOCITY: f32 = 1.0;
+const BOID_MIN_VELOCITY: f32 = 0.8;
+const BOID_COHESION: f32 = 30.0;
+const BOID_GROUP_SIZE: usize = 8;
+const BOID_SEPARATION: f32 = 2.0;
+const BOID_SEPARATION_DISTANCE: f32 = 4.0;
+const BOID_PERCEPTION: f32 = 30.0;
+const BOID_ALIGMENT: f32 = 2.0;
+const BOID_SPEED: f32 = 100.0;
+const BOID_ROTATION: f32 = 4.0;
+const BOID_WAKE_PER_SECOND: u32 = 5;
 const WINDOR_BORDER_COLLISION: bool = false;
 
 #[derive(Debug, Hash, PartialEq, Eq, Clone, StageLabel)]
@@ -71,7 +73,6 @@ fn main() {
             FixedUpdateStage,
             SystemStage::parallel()
                 .with_run_criteria(FixedTimestep::step(1f64 / 60f64))
-                // I'd like all of these to only run in AppState::InGame
                 .with_system(boid_acceleration_system),
         )
         .run();
@@ -177,7 +178,7 @@ fn mouse_handler(
 ) {
     if mouse_button_input.pressed(MouseButton::Left) {
         let spawn_count = 6;
-        spawn_birds(
+        spawn_boids(
             &mut commands,
             &windows,
             &mut counter,
@@ -187,7 +188,7 @@ fn mouse_handler(
     }
 }
 
-fn spawn_birds(
+fn spawn_boids(
     commands: &mut Commands,
     windows: &Windows,
     counter: &mut BevyCounter,
@@ -196,19 +197,23 @@ fn spawn_birds(
 ) {
     let window = windows.primary();
     let mut rng = thread_rng();
-    let bird_x = rng.gen::<f32>() * window.width() - window.width() / 2.0;
-    let bird_y = rng.gen::<f32>() * window.height() - window.height() / 2.0;
+    let boid_x = rng.gen::<f32>() * window.width() - window.width() / 2.0;
+    let boid_y = rng.gen::<f32>() * window.height() - window.height() / 2.0;
 
     for count in 0..spawn_count {
-        let bird_z = (counter.count + count) as f32 * 0.00001;
+        let boid_z = (counter.count + count) as f32 * 0.00001;
 
         commands
             .spawn_bundle(SpriteSheetBundle {
                 texture_atlas: ship_atlas.clone(),
-                sprite: TextureAtlasSprite::new(rng.gen::<usize>() % (16 * 32)),
+                sprite: TextureAtlasSprite {
+                    index: rng.gen::<usize>() % (16 * 32),
+                    anchor: bevy::sprite::Anchor::TopCenter,
+                    ..Default::default()
+                },
                 transform: Transform {
-                    translation: Vec3::new(bird_x, bird_y, bird_z),
-                    scale: Vec3::splat(BIRD_SCALE * BIRD_SPRITE_SCALE),
+                    translation: Vec3::new(boid_x, boid_y, boid_z),
+                    scale: Vec3::splat(BOID_SCALE * BOID_SPRITE_SCALE),
                     ..default()
                 },
                 ..default()
@@ -224,51 +229,51 @@ fn spawn_birds(
     counter.count += spawn_count;
 }
 
-pub fn collision_system(windows: Res<Windows>, bird_query: Query<(&mut Boid, &mut Transform)>) {
+pub fn collision_system(windows: Res<Windows>, boid_query: Query<(&mut Boid, &mut Transform)>) {
     if WINDOR_BORDER_COLLISION {
-        window_bounce_collision_system(windows, bird_query);
+        window_bounce_collision_system(windows, boid_query);
     } else {
-        window_teleport_collision_system(windows, bird_query);
+        window_teleport_collision_system(windows, boid_query);
     }
 }
 
 fn window_bounce_collision_system(
     windows: Res<Windows>,
-    mut bird_query: Query<(&mut Boid, &mut Transform)>,
+    mut boid_query: Query<(&mut Boid, &mut Transform)>,
 ) {
     let window = windows.primary();
     let half_width = window.width() as f32 * 0.5;
     let half_height = window.height() as f32 * 0.5;
 
-    for (mut bird, transform) in bird_query.iter_mut() {
-        let x_vel = bird.velocity.x;
-        let y_vel = bird.velocity.y;
+    for (mut boid, transform) in boid_query.iter_mut() {
+        let x_vel = boid.velocity.x;
+        let y_vel = boid.velocity.y;
         let x_pos = transform.translation.x;
         let y_pos = transform.translation.y;
 
-        if (x_vel > 0.0 && x_pos + HALF_BIRD_SIZE > half_width)
-            || (x_vel <= 0.0 && x_pos - HALF_BIRD_SIZE < -(half_width))
+        if (x_vel > 0.0 && x_pos + HALF_BOID_SIZE > half_width)
+            || (x_vel <= 0.0 && x_pos - HALF_BOID_SIZE < -(half_width))
         {
-            bird.velocity.x = -x_vel;
+            boid.velocity.x = -x_vel;
         }
-        if y_vel < 0.0 && y_pos - HALF_BIRD_SIZE < -half_height {
-            bird.velocity.y = -y_vel;
+        if y_vel < 0.0 && y_pos - HALF_BOID_SIZE < -half_height {
+            boid.velocity.y = -y_vel;
         }
-        if y_pos + HALF_BIRD_SIZE > half_height && y_vel > 0.0 {
-            bird.velocity.y = 0.0;
+        if y_pos + HALF_BOID_SIZE > half_height && y_vel > 0.0 {
+            boid.velocity.y = 0.0;
         }
     }
 }
 
 fn window_teleport_collision_system(
     windows: Res<Windows>,
-    mut bird_query: Query<(&mut Boid, &mut Transform)>,
+    mut boid_query: Query<(&mut Boid, &mut Transform)>,
 ) {
     let window = windows.primary();
     let half_width = window.width() as f32 * 0.5;
     let half_height = window.height() as f32 * 0.5;
 
-    for (_, mut transform) in bird_query.iter_mut() {
+    for (_, mut transform) in boid_query.iter_mut() {
         let x_pos = transform.translation.x;
         let y_pos = transform.translation.y;
         if x_pos > half_width {
@@ -304,19 +309,19 @@ fn counter_system(
 }
 
 fn boid_move_system(time: Res<Time>, mut query: Query<(Entity, &mut Boid, &mut Transform)>) {
-    let dspeed = time.delta_seconds() * BIRD_SPEED;
+    let dspeed = time.delta_seconds() * BOID_SPEED;
     for (_, mut boid, mut transform) in query.iter_mut() {
         let acc = boid.acceleration;
         boid.velocity += acc;
 
         let vel = boid.velocity;
-        boid.velocity = set_velocity(BIRD_MAX_VELOCITY, BIRD_MIN_VELOCITY, &vel);
+        boid.velocity = set_velocity(BOID_MAX_VELOCITY, BOID_MIN_VELOCITY, &vel);
         transform.translation += vec3(boid.velocity.x, boid.velocity.y, 0.0).mul(dspeed);
 
         let angle = { vel.y.atan2(vel.x) + FRAC_PI_2 * 3.0 };
         transform.rotation = transform.rotation.slerp(
             Quat::from_axis_angle(Vec3::new(0., 0., 1.), angle),
-            time.delta_seconds() * BIRD_ROTATION,
+            time.delta_seconds() * BOID_ROTATION,
         );
     }
 }
@@ -348,7 +353,7 @@ impl PointDistance for BoidObject {
         let d_x = self.pos[0] - point[0];
         let d_y = self.pos[1] - point[1];
         let distance_to_origin_2 = d_x * d_x + d_y * d_y;
-        distance_to_origin_2 <= HALF_BIRD_SIZE
+        distance_to_origin_2 <= HALF_BOID_SIZE
     }
 }
 
@@ -376,20 +381,20 @@ fn boid_acceleration_system(
         RTree::bulk_load(boid_array)
     };
 
-    let dspeed = time.delta_seconds() * BIRD_SPEED;
+    let dspeed = time.delta_seconds() * BOID_SPEED;
     let gid = *group_id;
 
     for (entity, mut boid, transform) in query.iter_mut() {
         let entity_id = entity.id();
-        if entity_id % BIRD_WAKE_PER_SECOND != gid % BIRD_WAKE_PER_SECOND {
+        if entity_id % BOID_WAKE_PER_SECOND != gid % BOID_WAKE_PER_SECOND {
             continue;
         }
 
         let pos = transform.translation.truncate();
         let local_boids = tree
             .nearest_neighbor_iter_with_distance_2(&[pos[0], pos[1]])
-            .take(10)
-            .filter(|(b, v)| b.id != entity_id && *v <= BIRD_PERCEPTION)
+            .take(BOID_GROUP_SIZE)
+            .filter(|(b, v)| b.id != entity_id && *v <= BOID_PERCEPTION)
             .map(|(b, _)| b)
             .collect::<Vec<&BoidObject>>();
 
@@ -404,7 +409,7 @@ fn boid_acceleration_system(
             boid.acceleration +=
                 (alignment + cohesion + separation + vec2(0.002, 0.002)).mul(dspeed);
         }
-        boid.acceleration = set_max_acc(BIRD_MAX_FORCE, &boid.acceleration);
+        boid.acceleration = set_max_acc(BOID_MAX_FORCE, &boid.acceleration);
     }
 }
 
@@ -419,7 +424,7 @@ fn boids_alignment<'a>(current_boid: (&Boid, &Transform), local_boids: &Vec<&Boi
         average_velocity += boid.velocity;
     }
     average_velocity = average_velocity.div(local_boids_len as f32);
-    average_velocity = average_velocity.sub(current_boid.0.velocity) / BIRD_ALIGMENT;
+    average_velocity = average_velocity.sub(current_boid.0.velocity) / BOID_ALIGMENT;
     average_velocity
 }
 
@@ -434,7 +439,7 @@ fn boids_cohesion(current_boid: (&Boid, &Transform), local_boids: &Vec<&BoidObje
         average_position += boid.pos
     }
     average_position = average_position.div(local_boids_len as f32);
-    average_position = average_position.sub(current_boid.1.translation.truncate()) / BIRD_COHESION;
+    average_position = average_position.sub(current_boid.1.translation.truncate()) / BOID_COHESION;
     average_position
 }
 
@@ -451,12 +456,12 @@ fn boids_separation(current_boid: (&Boid, &Transform), local_boids: &Vec<&BoidOb
                 .1
                 .translation
                 .distance(vec3(boid.pos[0], boid.pos[1], 0.0))
-                * BIRD_SEPARATION,
+                * BOID_SEPARATION_DISTANCE,
         );
         average_seperation -= difference_vec;
     }
 
-    average_seperation * 1.5
+    average_seperation * BOID_SEPARATION
 }
 
 fn set_max_acc(max_acc: f32, acc: &Vec2) -> Vec2 {
