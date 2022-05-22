@@ -28,3 +28,4 @@ bevy = {git = "https://github.com/bevyengine/bevy", version = "0.8.0-dev", featu
 ]}
 quadtree_rs = "0.1.2"
 rand = "0.8.5"
+rstar = "0.9.3"
