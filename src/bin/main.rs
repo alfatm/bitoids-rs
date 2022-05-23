@@ -1,17 +1,14 @@
-use bevy::core::FixedTimestep;
-use bevy::sprite::TextureAtlas;
 use bevy::{
+    core::FixedTimestep,
     diagnostic::{Diagnostics, FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin},
-    math::*,
+    math::{Vec2, Vec3, *},
     prelude::*,
-    window::PresentMode,
+    sprite::TextureAtlas,
+    window::{PresentMode, WindowMode},
 };
 use rand::{thread_rng, Rng};
 use rstar::{PointDistance, RTree, RTreeObject, AABB};
-use std::f32::consts::FRAC_PI_2;
-use std::ops::Div;
-use std::ops::Mul;
-use std::ops::Sub;
+use std::{f32::consts::FRAC_PI_2, ops::Div, ops::Mul, ops::Sub};
 
 const MAX_VELOCITY: f32 = 2000.;
 const BOID_SCALE: f32 = 0.28;
@@ -55,8 +52,12 @@ fn main() {
             title: "BevyMark".to_string(),
             width: 1980.,
             height: 1200.,
+            mode: WindowMode::BorderlessFullscreen,
             present_mode: PresentMode::Immediate,
             resizable: true,
+            position: Some(vec2(0.0, 0.0)),
+            fit_canvas_to_parent: true,
+            // canvas: Some("#canvas".to_string()),
             ..default()
         })
         // .insert_resource(Msaa { samples: 4 })
@@ -89,14 +90,15 @@ fn setup(
     asset_server: Res<AssetServer>,
     texture_atlases: ResMut<Assets<TextureAtlas>>,
 ) {
+    commands.spawn_bundle(OrthographicCameraBundle::new_2d());
+    commands.spawn_bundle(UiCameraBundle::default());
+
     let font = asset_server.load("fonts/FiraSans-Bold.ttf");
     let ship_atlas = load_ships_atlas(&asset_server, texture_atlases);
     commands.insert_resource(ship_atlas);
 
     commands.insert_resource(BevyCounter { count: 0 });
 
-    commands.spawn_bundle(OrthographicCameraBundle::new_2d());
-    commands.spawn_bundle(UiCameraBundle::default());
     commands
         .spawn_bundle(TextBundle {
             text: Text {
@@ -160,10 +162,10 @@ fn load_ships_atlas(
     let texture_handle = asset_server.load("ships001.png");
     let texture_atlas = TextureAtlas::from_grid_with_padding(
         texture_handle,
-        Vec2::new(16.0, 16.0),
+        Vec2::new(14.0, 14.0),
         16,
         32,
-        vec2(0.0, 0.0),
+        vec2(2.0, 2.0),
     );
     let atlas_handle = texture_atlases.add(texture_atlas);
     ShipAtlas(atlas_handle)

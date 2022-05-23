@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+	<title>Bitoids tutorial</title>
+	<style>
+		* {
+			margin: 0;
+			padding: 0;
+		}
+
+		/* to remove the top and left whitespace */
+		html,
+		body {
+			width: 100%;
+			height: 100%;
+		}
+
+		canvas {
+			background: rgb(0, 0, 0);
+			display: block;
+		}
+	</style>
+</head>
+
+<body>
+	<script type="module">
+		import init from './bitoids.js'
+		init()
+
+		document.addEventListener('contextmenu', function (evt) {
+			evt.preventDefault();
+		})
+
+		document.getElementById('myCanvas').height = window.innerHeight;
+		document.getElementById('myCanvas').width = window.innerWidth;
+	</script>
+</body>
+
+</html>
