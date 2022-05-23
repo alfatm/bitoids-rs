@@ -9,16 +9,17 @@
 			padding: 0;
 		}
 
-		/* to remove the top and left whitespace */
 		html,
 		body {
-			width: 100%;
-			height: 100%;
+			width: 100vw !important;
+			height: 100vh !important;
 		}
 
 		canvas {
 			background: rgb(0, 0, 0);
 			display: block;
+			width: 100vw !important;
+			height: 100vh !important;
 		}
 	</style>
 </head>
@@ -31,9 +32,6 @@
 		document.addEventListener('contextmenu', function (evt) {
 			evt.preventDefault();
 		})
-
-		document.getElementById('myCanvas').height = window.innerHeight;
-		document.getElementById('myCanvas').width = window.innerWidth;
 	</script>
 </body>
 

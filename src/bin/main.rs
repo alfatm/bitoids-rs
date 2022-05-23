@@ -25,7 +25,7 @@ const BOID_PERCEPTION: f32 = 30.0;
 const BOID_ALIGMENT: f32 = 2.0;
 const BOID_SPEED: f32 = 100.0;
 const BOID_ROTATION: f32 = 4.0;
-const BOID_WAKE_PER_SECOND: u32 = 5;
+const BOID_WAKE_PER_SECOND: u32 = 60;
 const WINDOR_BORDER_COLLISION: bool = false;
 
 #[derive(Debug, Hash, PartialEq, Eq, Clone, StageLabel)]
