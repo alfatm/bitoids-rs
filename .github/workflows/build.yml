@@ -34,8 +34,6 @@ jobs:
         components: rustfmt, clippy
         target: wasm32-unknown-unknown
 
-    - run: cargo install sccache
-
     - name: Cache cargo registry
       uses: actions/cache@v2
       continue-on-error: false
