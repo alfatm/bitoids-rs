@@ -1,0 +1,75 @@
+name: build
+
+on:
+  push:
+    tags:
+      - '*'
+
+jobs:
+  build:
+    if: github.event.base_ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-latest ]
+        include:
+          - os: ubuntu-latest
+            sccache-path: /home/runner/.cache/sccache
+
+    env:
+      RUST_BACKTRACE: full
+      RUSTC_WRAPPER: sccache
+      RUSTV: ${{ matrix.rust }}
+      SCCACHE_CACHE_SIZE: 2G
+      SCCACHE_DIR: ${{ matrix.sccache-path }}
+      # SCCACHE_RECACHE: 1 # Uncomment this to clear cache, then comment it back out
+
+    steps:
+    - uses: actions/checkout@v2
+    - uses: actions-rs/toolchain@v1
+      with:
+        toolchain: nightly
+        override: true
+        components: rustfmt, clippy, sccache, wasm-bindgen-cli, wasm32-unknown-unknown
+
+    - name: Cache cargo registry
+      uses: actions/cache@v2
+      continue-on-error: false
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+                      ${{ runner.os }}-cargo-
+
+    - name: Save sccache
+      uses: actions/cache@v2
+      continue-on-error: false
+      with:
+        path: ${{ matrix.sccache-path }}
+        key: ${{ runner.os }}-sccache-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+                      ${{ runner.os }}-sccache-
+
+    - name: Start sccache server
+      run: sccache --start-server
+
+    - name: build
+      run: cargo build --release --all-features --target wasm32-unknown-unknown
+
+    - name: bindgen
+      run: mkdir -p ./public && cp ./assets/* ./public/ -R && wasm-bindgen --out-dir public --target web target/wasm32-unknown-unknown/release/main.wasm
+
+    - name: Stop sccache server
+      run: sccache --stop-server || true
+
+    - name: publish
+      uses: JamesIves/github-pages-deploy-action@4.2.0
+      with:
+        repository-name: alfatm/kotun.io
+        branch: master
+        folder: public
+        git-config-email: alfatm@gmail.com
+        token: ${{ secrets.API_TOKEN_GITHUB }}

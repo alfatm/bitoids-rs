@@ -5,7 +5,7 @@ cargo install wasm-bindgen-cli
 # Build the project
 cargo build --release --target wasm32-unknown-unknown
 # Setup target directory
-mkdir -p dist
+mkdir -p public
 # Move the index file
 cp assets/index.html dist
 # Move the assets
