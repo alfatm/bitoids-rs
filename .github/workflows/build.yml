@@ -31,7 +31,12 @@ jobs:
       with:
         toolchain: nightly
         override: true
-        components: rustfmt, clippy, sccache, wasm-bindgen-cli, wasm32-unknown-unknown
+        components: rustfmt, clippy
+        target: wasm32-unknown-unknown
+
+    - uses: actions-rs/cargo@v1
+      with:
+        command: install sccache
 
     - name: Cache cargo registry
       uses: actions/cache@v2
