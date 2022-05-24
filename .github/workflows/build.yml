@@ -34,9 +34,7 @@ jobs:
         components: rustfmt, clippy
         target: wasm32-unknown-unknown
 
-    - uses: actions-rs/cargo@v1
-      with:
-        command: install sccache
+    - run: cargo install sccache
 
     - name: Cache cargo registry
       uses: actions/cache@v2
