@@ -1,37 +1,39 @@
+use bevy::utils::Duration;
 use bevy::{
-    core::FixedTimestep,
+    asset::AssetServer,
     diagnostic::{Diagnostics, FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin},
     math::{Vec2, Vec3, *},
     prelude::*,
     sprite::TextureAtlas,
+    time::common_conditions::on_timer,
+    window::PrimaryWindow,
     window::{PresentMode, WindowMode},
 };
 use rand::{thread_rng, Rng};
 use rstar::{PointDistance, RTree, RTreeObject, AABB};
 use std::{f32::consts::FRAC_PI_2, ops::Div, ops::Mul, ops::Sub};
+use wasm_bindgen::prelude::*;
 
 const MAX_VELOCITY: f32 = 2000.;
 const BOID_SCALE: f32 = 0.28;
 const HALF_BOID_SIZE: f32 = BOID_SCALE * 0.5;
 const BOID_SPRITE_SCALE: f32 = 6.0;
-const BOID_MAX_FORCE: f32 = 1.0;
+const BOID_MAX_FORCE: f32 = 2.0;
 const BOID_MAX_VELOCITY: f32 = 1.0;
 const BOID_MIN_VELOCITY: f32 = 0.8;
-const BOID_COHESION: f32 = 30.0;
-const BOID_GROUP_SIZE: usize = 8;
+const BOID_COHESION: f32 = 150.0;
+const BOID_GROUP_SIZE: usize = 12;
 const BOID_SEPARATION: f32 = 2.0;
 const BOID_SEPARATION_DISTANCE: f32 = 4.0;
-const BOID_PERCEPTION: f32 = 30.0;
-const BOID_ALIGMENT: f32 = 2.0;
+const BOID_PERCEPTION: f32 = 80.0;
+const BOID_ALIGNMENT: f32 = 3.0;
 const BOID_SPEED: f32 = 100.0;
-const BOID_ROTATION: f32 = 4.0;
+const BOID_ROTATION: f32 = 5.0;
 const BOID_WAKE_PER_SECOND: u32 = 60;
-const WINDOR_BORDER_COLLISION: bool = false;
+const WINDOW_BORDER_COLLISION: bool = false;
 
-#[derive(Debug, Hash, PartialEq, Eq, Clone, StageLabel)]
-struct FixedUpdateStage;
-
-struct BevyCounter {
+#[derive(Resource)]
+struct BoidCounter {
     pub count: usize,
 }
 
@@ -46,22 +48,40 @@ pub struct Boid {
     pub acceleration: Vec2,
 }
 
-fn main() {
+#[wasm_bindgen(start)]
+fn start() -> Result<(), JsValue> {
+    console_error_panic_hook::set_once();
+    // tracing_wasm::set_as_global_default();
+
+    info!("start");
+
     App::new()
-        .insert_resource(WindowDescriptor {
-            title: "BevyMark".to_string(),
-            width: 1980.,
-            height: 1200.,
-            mode: WindowMode::BorderlessFullscreen,
-            present_mode: PresentMode::Immediate,
-            resizable: true,
-            position: Some(vec2(0.0, 0.0)),
-            fit_canvas_to_parent: true,
-            // canvas: Some("#canvas".to_string()),
-            ..default()
-        })
-        // .insert_resource(Msaa { samples: 4 })
-        .add_plugins(DefaultPlugins)
+        .insert_resource(Msaa::default())
+        .add_plugins(
+            DefaultPlugins
+                .build()
+                .set(WindowPlugin {
+                    primary_window: Window {
+                        title: "Bitoids".to_string(),
+                        resolution: (1980.0, 1200.0).into(),
+                        mode: WindowMode::BorderlessFullscreen,
+                        position: WindowPosition::Automatic,
+                        present_mode: PresentMode::Fifo,
+                        resizable: true,
+                        fit_canvas_to_parent: true,
+                        // canvas: Some("#canvas".to_string()),
+                        ..default()
+                    }
+                    .into(),
+                    ..default()
+                })
+                .set(bevy::log::LogPlugin {
+                    level: bevy::log::Level::ERROR,
+                    filter:
+                        "warn,wgpu=error,wgpu_core=warn,wgpu_hal=warn,naga=error,bevy_render=error,bevy_ecs=warn"
+                            .to_string(),
+                }),
+        )
         .add_plugin(FrameTimeDiagnosticsPlugin::default())
         .add_plugin(LogDiagnosticsPlugin::default())
         .add_startup_system(setup)
@@ -69,18 +89,14 @@ fn main() {
         .add_system(counter_system)
         .add_system(boid_move_system)
         .add_system(collision_system)
-        .add_stage_after(
-            CoreStage::Update,
-            FixedUpdateStage,
-            SystemStage::parallel()
-                .with_run_criteria(FixedTimestep::step(1f64 / 60f64))
-                .with_system(boid_acceleration_system),
-        )
+        .add_system(boid_acceleration_system.run_if(on_timer(Duration::from_secs_f32(1. / 60.))))
         .run();
+
+    Ok(())
 }
 
-#[derive(Deref)]
-struct BirdTexture(Handle<Image>);
+// #[derive(Deref)]
+// struct BirdTexture(Handle<Image>);
 
 #[derive(Component)]
 struct StatsText;
@@ -90,55 +106,51 @@ fn setup(
     asset_server: Res<AssetServer>,
     texture_atlases: ResMut<Assets<TextureAtlas>>,
 ) {
-    commands.spawn_bundle(OrthographicCameraBundle::new_2d());
-    commands.spawn_bundle(UiCameraBundle::default());
+    commands.spawn(Camera2dBundle::default());
 
     let font = asset_server.load("fonts/FiraSans-Bold.ttf");
     let ship_atlas = load_ships_atlas(&asset_server, texture_atlases);
     commands.insert_resource(ship_atlas);
 
-    commands.insert_resource(BevyCounter { count: 0 });
+    commands.insert_resource(BoidCounter { count: 0 });
 
     commands
-        .spawn_bundle(TextBundle {
-            text: Text {
-                sections: vec![
-                    TextSection {
-                        value: "Boid Count: ".to_string(),
-                        style: TextStyle {
-                            font: font.clone(),
-                            font_size: 40.0,
-                            color: Color::rgb(0.0, 1.0, 0.0),
-                        },
+        .spawn(
+            TextBundle::from_sections([
+                TextSection::new(
+                    "Boid Count: ",
+                    TextStyle {
+                        font: font.clone(),
+                        font_size: 40.0,
+                        color: Color::rgb(0.0, 1.0, 0.0),
                     },
-                    TextSection {
-                        value: "".to_string(),
-                        style: TextStyle {
-                            font: font.clone(),
-                            font_size: 40.0,
-                            color: Color::rgb(0.0, 1.0, 1.0),
-                        },
+                ),
+                TextSection::new(
+                    "",
+                    TextStyle {
+                        font: font.clone(),
+                        font_size: 40.0,
+                        color: Color::rgb(0.0, 1.0, 1.0),
                     },
-                    TextSection {
-                        value: "\nAverage FPS: ".to_string(),
-                        style: TextStyle {
-                            font: font.clone(),
-                            font_size: 40.0,
-                            color: Color::rgb(0.0, 1.0, 0.0),
-                        },
+                ),
+                TextSection::new(
+                    "\nAverage FPS: ",
+                    TextStyle {
+                        font: font.clone(),
+                        font_size: 40.0,
+                        color: Color::rgb(0.0, 1.0, 0.0),
                     },
-                    TextSection {
-                        value: "".to_string(),
-                        style: TextStyle {
-                            font: font.clone(),
-                            font_size: 40.0,
-                            color: Color::rgb(0.0, 1.0, 1.0),
-                        },
+                ),
+                TextSection::new(
+                    "",
+                    TextStyle {
+                        font: font.clone(),
+                        font_size: 40.0,
+                        color: Color::rgb(0.0, 1.0, 1.0),
                     },
-                ],
-                ..default()
-            },
-            style: Style {
+                ),
+            ])
+            .with_style(Style {
                 position_type: PositionType::Absolute,
                 position: UiRect {
                     top: Val::Px(5.0),
@@ -146,13 +158,12 @@ fn setup(
                     ..default()
                 },
                 ..default()
-            },
-            ..default()
-        })
+            }),
+        )
         .insert(StatsText);
 }
 
-#[derive(Deref)]
+#[derive(Deref, Resource)]
 struct ShipAtlas(Handle<TextureAtlas>);
 
 fn load_ships_atlas(
@@ -160,12 +171,13 @@ fn load_ships_atlas(
     mut texture_atlases: ResMut<Assets<TextureAtlas>>,
 ) -> ShipAtlas {
     let texture_handle = asset_server.load("ships001.png");
-    let texture_atlas = TextureAtlas::from_grid_with_padding(
+    let texture_atlas = TextureAtlas::from_grid(
         texture_handle,
         Vec2::new(14.0, 14.0),
         16,
         32,
-        vec2(2.0, 2.0),
+        Some(vec2(2.0, 2.0)),
+        None,
     );
     let atlas_handle = texture_atlases.add(texture_atlas);
     ShipAtlas(atlas_handle)
@@ -174,15 +186,19 @@ fn load_ships_atlas(
 fn mouse_handler(
     mut commands: Commands,
     mouse_button_input: Res<Input<MouseButton>>,
-    windows: Res<Windows>,
-    mut counter: ResMut<BevyCounter>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    mut counter: ResMut<BoidCounter>,
     ship_atlas: Res<ShipAtlas>,
 ) {
+    let Ok(window) = windows.get_single() else {
+        return;
+    };
+
     if mouse_button_input.pressed(MouseButton::Left) {
         let spawn_count = 6;
         spawn_boids(
             &mut commands,
-            &windows,
+            &window,
             &mut counter,
             spawn_count,
             ship_atlas,
@@ -192,12 +208,11 @@ fn mouse_handler(
 
 fn spawn_boids(
     commands: &mut Commands,
-    windows: &Windows,
-    counter: &mut BevyCounter,
+    window: &Window,
+    counter: &mut BoidCounter,
     spawn_count: usize,
     ship_atlas: Res<ShipAtlas>,
 ) {
-    let window = windows.primary();
     let mut rng = thread_rng();
     let boid_x = rng.gen::<f32>() * window.width() - window.width() / 2.0;
     let boid_y = rng.gen::<f32>() * window.height() - window.height() / 2.0;
@@ -206,7 +221,7 @@ fn spawn_boids(
         let boid_z = (counter.count + count) as f32 * 0.00001;
 
         commands
-            .spawn_bundle(SpriteSheetBundle {
+            .spawn(SpriteSheetBundle {
                 texture_atlas: ship_atlas.clone(),
                 sprite: TextureAtlasSprite {
                     index: rng.gen::<usize>() % (16 * 32),
@@ -231,19 +246,25 @@ fn spawn_boids(
     counter.count += spawn_count;
 }
 
-pub fn collision_system(windows: Res<Windows>, boid_query: Query<(&mut Boid, &mut Transform)>) {
-    if WINDOR_BORDER_COLLISION {
-        window_bounce_collision_system(windows, boid_query);
+pub fn collision_system(
+    windows: Query<&Window, With<PrimaryWindow>>,
+    boid_query: Query<(&mut Boid, &mut Transform)>,
+) {
+    let Ok(window) = windows.get_single() else {
+        return;
+    };
+
+    if WINDOW_BORDER_COLLISION {
+        window_bounce_collision_system(window, boid_query);
     } else {
-        window_teleport_collision_system(windows, boid_query);
+        window_teleport_collision_system(window, boid_query);
     }
 }
 
 fn window_bounce_collision_system(
-    windows: Res<Windows>,
+    window: &Window,
     mut boid_query: Query<(&mut Boid, &mut Transform)>,
 ) {
-    let window = windows.primary();
     let half_width = window.width() as f32 * 0.5;
     let half_height = window.height() as f32 * 0.5;
 
@@ -268,10 +289,9 @@ fn window_bounce_collision_system(
 }
 
 fn window_teleport_collision_system(
-    windows: Res<Windows>,
+    window: &Window,
     mut boid_query: Query<(&mut Boid, &mut Transform)>,
 ) {
-    let window = windows.primary();
     let half_width = window.width() as f32 * 0.5;
     let half_height = window.height() as f32 * 0.5;
 
@@ -294,7 +314,7 @@ fn window_teleport_collision_system(
 
 fn counter_system(
     diagnostics: Res<Diagnostics>,
-    counter: Res<BevyCounter>,
+    counter: Res<BoidCounter>,
     mut query: Query<&mut Text, With<StatsText>>,
 ) {
     let mut text = query.single_mut();
@@ -311,14 +331,14 @@ fn counter_system(
 }
 
 fn boid_move_system(time: Res<Time>, mut query: Query<(Entity, &mut Boid, &mut Transform)>) {
-    let dspeed = time.delta_seconds() * BOID_SPEED;
+    let delta_speed = time.delta_seconds() * BOID_SPEED;
     for (_, mut boid, mut transform) in query.iter_mut() {
         let acc = boid.acceleration;
         boid.velocity += acc;
 
         let vel = boid.velocity;
         boid.velocity = set_velocity(BOID_MAX_VELOCITY, BOID_MIN_VELOCITY, &vel);
-        transform.translation += vec3(boid.velocity.x, boid.velocity.y, 0.0).mul(dspeed);
+        transform.translation += vec3(boid.velocity.x, boid.velocity.y, 0.0).mul(delta_speed);
 
         let angle = { vel.y.atan2(vel.x) + FRAC_PI_2 * 3.0 };
         transform.rotation = transform.rotation.slerp(
@@ -361,21 +381,21 @@ impl PointDistance for BoidObject {
 
 fn boid_acceleration_system(
     time: Res<Time>,
-    mut update_time: Local<f64>,
+    mut update_time: Local<Duration>,
     mut group_id: Local<u32>,
     mut query: Query<(Entity, &mut Boid, &mut Transform)>,
 ) {
-    if time.seconds_since_startup() - *update_time < 0.1 / 60.0 {
+    if (time.elapsed() - *update_time).as_secs_f64() < 0.1 / 60.0 {
         return;
     }
-    *update_time = time.seconds_since_startup();
+    *update_time = time.elapsed();
     *group_id = *group_id + 1;
 
     let tree = {
         let boid_array = query
             .iter()
             .map(|(entity, boid, transform)| BoidObject {
-                id: entity.id(),
+                id: entity.index(),
                 pos: transform.translation.truncate(),
                 velocity: boid.velocity,
             })
@@ -383,11 +403,11 @@ fn boid_acceleration_system(
         RTree::bulk_load(boid_array)
     };
 
-    let dspeed = time.delta_seconds() * BOID_SPEED;
+    let delta_speed = time.delta_seconds() * BOID_SPEED;
     let gid = *group_id;
 
     for (entity, mut boid, transform) in query.iter_mut() {
-        let entity_id = entity.id();
+        let entity_id = entity.index();
         if entity_id % BOID_WAKE_PER_SECOND != gid % BOID_WAKE_PER_SECOND {
             continue;
         }
@@ -400,16 +420,16 @@ fn boid_acceleration_system(
             .map(|(b, _)| b)
             .collect::<Vec<&BoidObject>>();
 
-        let entity_id = entity.id();
+        let entity_id = entity.index();
         let alignment = boids_alignment((&boid, &transform), &local_boids);
         let cohesion = boids_cohesion((&boid, &transform), &local_boids);
         let separation = boids_separation((&boid, &transform), &local_boids);
         if entity_id % 2 == 0 {
             boid.acceleration +=
-                (alignment + cohesion + separation + vec2(-0.002, 0.002)).mul(dspeed);
+                (alignment + cohesion + separation + vec2(-0.002, 0.002)).mul(delta_speed);
         } else {
             boid.acceleration +=
-                (alignment + cohesion + separation + vec2(0.002, 0.002)).mul(dspeed);
+                (alignment + cohesion + separation + vec2(0.002, 0.002)).mul(delta_speed);
         }
         boid.acceleration = set_max_acc(BOID_MAX_FORCE, &boid.acceleration);
     }
@@ -426,7 +446,7 @@ fn boids_alignment<'a>(current_boid: (&Boid, &Transform), local_boids: &Vec<&Boi
         average_velocity += boid.velocity;
     }
     average_velocity = average_velocity.div(local_boids_len as f32);
-    average_velocity = average_velocity.sub(current_boid.0.velocity) / BOID_ALIGMENT;
+    average_velocity = average_velocity.sub(current_boid.0.velocity) / BOID_ALIGNMENT;
     average_velocity
 }
 
@@ -446,10 +466,10 @@ fn boids_cohesion(current_boid: (&Boid, &Transform), local_boids: &Vec<&BoidObje
 }
 
 fn boids_separation(current_boid: (&Boid, &Transform), local_boids: &Vec<&BoidObject>) -> Vec2 {
-    let mut average_seperation = vec2(0.0, 0.0);
+    let mut average_separation = vec2(0.0, 0.0);
     let local_boids_len = local_boids.len();
     if local_boids_len == 0 {
-        return average_seperation;
+        return average_separation;
     }
 
     for boid in local_boids.into_iter() {
@@ -460,10 +480,10 @@ fn boids_separation(current_boid: (&Boid, &Transform), local_boids: &Vec<&BoidOb
                 .distance(vec3(boid.pos[0], boid.pos[1], 0.0))
                 * BOID_SEPARATION_DISTANCE,
         );
-        average_seperation -= difference_vec;
+        average_separation -= difference_vec;
     }
 
-    average_seperation * BOID_SEPARATION
+    average_separation * BOID_SEPARATION
 }
 
 fn set_max_acc(max_acc: f32, acc: &Vec2) -> Vec2 {

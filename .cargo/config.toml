@@ -1,5 +1,24 @@
+[net]
+git-fetch-with-cli = true
+
+[build]
+target = "wasm32-unknown-unknown"
+
+[unstable]
+# allow cargo out-dir
+unstable-options = true
+
 [target.wasm32-unknown-unknown]
 runner = "wasm-server-runner"
+rustflags = [
+  "--cfg=web_sys_unstable_apis",
+]
+
+[target.'cfg(target_arch = "wasm32")']
+rustflags = [
+  "-C",
+  "target-feature=+bulk-memory",
+]
 
 [alias]
 serve = "run --target wasm32-unknown-unknown"
