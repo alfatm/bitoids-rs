@@ -21,13 +21,13 @@ const BOID_SPRITE_SCALE: f32 = 6.0;
 const BOID_MAX_FORCE: f32 = 1.0;
 const BOID_MAX_VELOCITY: f32 = 1.0;
 const BOID_MIN_VELOCITY: f32 = 0.8;
-const BOID_COHESION: f32 = 30.0;
+const BOID_COHESION: f32 = 50.0;
 const BOID_GROUP_SIZE: usize = 8;
-const BOID_SEPARATION: f32 = 2.0;
+const BOID_SEPARATION: f32 = 4.0;
 const BOID_SEPARATION_DISTANCE: f32 = 4.0;
 const BOID_PERCEPTION: f32 = 30.0;
-const BOID_ALIGNMENT: f32 = 2.0;
-const BOID_SPEED: f32 = 100.0;
+const BOID_ALIGNMENT: f32 = 150.0;
+const BOID_SPEED: f32 = 200.0;
 const BOID_ROTATION: f32 = 4.0;
 const BOID_WAKE_PER_SECOND: u32 = 60;
 const WINDOW_BORDER_COLLISION: bool = false;
@@ -416,7 +416,11 @@ fn boid_acceleration_system(
         let local_boids = tree
             .nearest_neighbor_iter_with_distance_2(&[pos[0], pos[1]])
             .take(BOID_GROUP_SIZE)
-            .filter(|(b, v)| b.id != entity_id && *v <= BOID_PERCEPTION)
+            .filter(|(b, v)| {
+                b.id != entity_id
+                    && *v <= BOID_PERCEPTION
+                    && b.id % (BOID_GROUP_SIZE as u32) == entity_id % (BOID_GROUP_SIZE as u32)
+            })
             .map(|(b, _)| b)
             .collect::<Vec<&BoidObject>>();
 
@@ -436,18 +440,18 @@ fn boid_acceleration_system(
 }
 
 fn boids_alignment<'a>(current_boid: (&Boid, &Transform), local_boids: &Vec<&BoidObject>) -> Vec2 {
-    let mut average_velocity = vec2(0.0, 0.0);
+    let mut new_velocity = vec2(0.0, 0.0);
     let local_boids_len = local_boids.len();
     if local_boids_len == 0 {
-        return average_velocity;
+        return new_velocity;
     }
 
     for boid in local_boids.into_iter() {
-        average_velocity += boid.velocity;
+        new_velocity += boid.velocity;
     }
-    average_velocity = average_velocity.div(local_boids_len as f32);
-    average_velocity = average_velocity.sub(current_boid.0.velocity) / BOID_ALIGNMENT;
-    average_velocity
+    new_velocity = new_velocity.div(local_boids_len as f32).normalize();
+    new_velocity = (new_velocity + current_boid.0.velocity) * BOID_ALIGNMENT;
+    new_velocity
 }
 
 fn boids_cohesion(current_boid: (&Boid, &Transform), local_boids: &Vec<&BoidObject>) -> Vec2 {
@@ -461,7 +465,7 @@ fn boids_cohesion(current_boid: (&Boid, &Transform), local_boids: &Vec<&BoidObje
         average_position += boid.pos
     }
     average_position = average_position.div(local_boids_len as f32);
-    average_position = average_position.sub(current_boid.1.translation.truncate()) / BOID_COHESION;
+    average_position = average_position.sub(current_boid.1.translation.truncate()) * BOID_COHESION;
     average_position
 }
 
