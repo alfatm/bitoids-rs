@@ -1,10 +1,8 @@
 use bevy::utils::Duration;
 use bevy::{
-    asset::AssetServer,
-    diagnostic::{Diagnostics, DiagnosticsStore, FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin},
-    math::{Vec2, Vec3, *},
+    diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin},
+    math::*,
     prelude::*,
-    sprite::TextureAtlas,
     time::common_conditions::on_timer,
     window::PrimaryWindow,
     window::{PresentMode, WindowMode},
@@ -84,7 +82,7 @@ fn start() -> Result<(), JsValue> {
                             update_subscriber: None,
                 }),
         )
-        .add_plugins(FrameTimeDiagnosticsPlugin::default())
+        .add_plugins(FrameTimeDiagnosticsPlugin)
         .add_plugins(LogDiagnosticsPlugin::default())
         .add_systems(Startup, setup)
         .add_systems(Update, mouse_handler)
@@ -195,13 +193,7 @@ fn mouse_handler(
 
     if mouse_button_input.pressed(MouseButton::Left) {
         let spawn_count = 6;
-        spawn_boids(
-            &mut commands,
-            &window,
-            &mut counter,
-            spawn_count,
-            ship_atlas,
-        );
+        spawn_boids(&mut commands, window, &mut counter, spawn_count, ship_atlas);
     }
 }
 
@@ -267,8 +259,8 @@ fn window_bounce_collision_system(
     window: &Window,
     mut boid_query: Query<(&mut Boid, &mut Transform)>,
 ) {
-    let half_width = window.width() as f32 * 0.5;
-    let half_height = window.height() as f32 * 0.5;
+    let half_width = window.width() * 0.5;
+    let half_height = window.height() * 0.5;
 
     for (mut boid, transform) in boid_query.iter_mut() {
         let x_vel = boid.velocity.x;
@@ -294,8 +286,8 @@ fn window_teleport_collision_system(
     window: &Window,
     mut boid_query: Query<(&mut Boid, &mut Transform)>,
 ) {
-    let half_width = window.width() as f32 * 0.5;
-    let half_height = window.height() as f32 * 0.5;
+    let half_width = window.width() * 0.5;
+    let half_height = window.height() * 0.5;
 
     for (_, mut transform) in boid_query.iter_mut() {
         let x_pos = transform.translation.x;
@@ -391,7 +383,7 @@ fn boid_acceleration_system(
         return;
     }
     *update_time = time.elapsed();
-    *group_id = *group_id + 1;
+    *group_id += 1;
 
     let tree = {
         let boid_array = query
@@ -441,14 +433,14 @@ fn boid_acceleration_system(
     }
 }
 
-fn boids_alignment<'a>(current_boid: (&Boid, &Transform), local_boids: &Vec<&BoidObject>) -> Vec2 {
+fn boids_alignment(current_boid: (&Boid, &Transform), local_boids: &[&BoidObject]) -> Vec2 {
     let mut new_velocity = vec2(0.0, 0.0);
     let local_boids_len = local_boids.len();
     if local_boids_len == 0 {
         return new_velocity;
     }
 
-    for boid in local_boids.into_iter() {
+    for boid in local_boids.iter() {
         new_velocity += boid.velocity;
     }
     new_velocity = new_velocity.div(local_boids_len as f32).normalize();
@@ -456,14 +448,14 @@ fn boids_alignment<'a>(current_boid: (&Boid, &Transform), local_boids: &Vec<&Boi
     new_velocity
 }
 
-fn boids_cohesion(current_boid: (&Boid, &Transform), local_boids: &Vec<&BoidObject>) -> Vec2 {
+fn boids_cohesion(current_boid: (&Boid, &Transform), local_boids: &[&BoidObject]) -> Vec2 {
     let mut average_position = vec2(0.0, 0.0);
     let local_boids_len = local_boids.len();
     if local_boids_len == 0 {
         return average_position;
     }
 
-    for boid in local_boids.into_iter() {
+    for boid in local_boids.iter() {
         average_position += boid.pos
     }
     average_position = average_position.div(local_boids_len as f32);
@@ -471,14 +463,14 @@ fn boids_cohesion(current_boid: (&Boid, &Transform), local_boids: &Vec<&BoidObje
     average_position
 }
 
-fn boids_separation(current_boid: (&Boid, &Transform), local_boids: &Vec<&BoidObject>) -> Vec2 {
+fn boids_separation(current_boid: (&Boid, &Transform), local_boids: &[&BoidObject]) -> Vec2 {
     let mut average_separation = vec2(0.0, 0.0);
     let local_boids_len = local_boids.len();
     if local_boids_len == 0 {
         return average_separation;
     }
 
-    for boid in local_boids.into_iter() {
+    for boid in local_boids.iter() {
         let difference_vec = boid.pos.sub(current_boid.1.translation.truncate()).div(
             current_boid
                 .1
@@ -495,7 +487,7 @@ fn boids_separation(current_boid: (&Boid, &Transform), local_boids: &Vec<&BoidOb
 fn set_max_acc(max_acc: f32, acc: &Vec2) -> Vec2 {
     let acc_len = acc.length_squared();
 
-    let mut new_acc = acc.clone();
+    let mut new_acc = *acc;
 
     if acc_len > max_acc * max_acc {
         new_acc = acc.normalize_or_zero();
@@ -507,7 +499,7 @@ fn set_max_acc(max_acc: f32, acc: &Vec2) -> Vec2 {
 fn set_velocity(max_vel: f32, min_vel: f32, vel: &Vec2) -> Vec2 {
     let vel_len = vel.length_squared();
 
-    let mut new_vel = vel.clone();
+    let mut new_vel = *vel;
 
     if vel_len > max_vel * max_vel {
         new_vel = vel.normalize_or_zero();
