@@ -12,22 +12,21 @@ use rstar::{PointDistance, RTree, RTreeObject, AABB};
 use std::{f32::consts::FRAC_PI_2, ops::Div, ops::Mul, ops::Sub};
 use wasm_bindgen::prelude::*;
 
-const MAX_VELOCITY: f32 = 2000.;
 const BOID_SCALE: f32 = 0.28;
-const HALF_BOID_SIZE: f32 = BOID_SCALE * 0.5;
 const BOID_SPRITE_SCALE: f32 = 6.0;
-const BOID_MAX_FORCE: f32 = 1.0;
-const BOID_MAX_VELOCITY: f32 = 1.0;
+const BOID_MAX_FORCE: f32 = 10.0;
+const BOID_MAX_VELOCITY: f32 = 1.4;
 const BOID_MIN_VELOCITY: f32 = 0.8;
-const BOID_COHESION: f32 = 50.0;
-const BOID_GROUP_SIZE: usize = 8;
-const BOID_SEPARATION: f32 = 4.0;
-const BOID_SEPARATION_DISTANCE: f32 = 4.0;
+const BOID_COHESION: f32 = 40.0;
+const BOID_GROUP_SIZE: usize = 20;
+const BOID_SEPARATION: f32 = 20.0;
+const BOID_SEPARATION_DISTANCE: f32 = 10.0;
 const BOID_PERCEPTION: f32 = 30.0;
-const BOID_ALIGNMENT: f32 = 150.0;
+const BOID_ALIGNMENT: f32 = 10.0;
 const BOID_SPEED: f32 = 200.0;
-const BOID_ROTATION: f32 = 4.0;
-const BOID_WAKE_PER_SECOND: u32 = 60;
+const BOID_ROTATION: f32 = 5.0;
+const BOID_WAKE_PER_SECOND: u32 = 20;
+const BOID_SPAWN_COUNT: usize = 5;
 const WINDOW_BORDER_COLLISION: bool = false;
 
 #[derive(Resource)]
@@ -62,7 +61,7 @@ fn start() -> Result<(), JsValue> {
                     primary_window: Window {
                         title: "Bitoids".to_string(),
                         resolution: (1980.0, 1200.0).into(),
-                        mode: WindowMode::BorderlessFullscreen,
+                        mode: WindowMode::Windowed,
                         position: WindowPosition::Automatic,
                         present_mode: PresentMode::Fifo,
                         resizable: true,
@@ -75,9 +74,9 @@ fn start() -> Result<(), JsValue> {
                     ..default()
                 })
                 .set(bevy::log::LogPlugin {
-                    level: bevy::log::Level::ERROR,
+                    level: bevy::log::Level::INFO,
                     filter:
-                        "warn,wgpu=error,wgpu_core=warn,wgpu_hal=warn,naga=error,bevy_render=error,bevy_ecs=warn"
+                        "info,wgpu=error,wgpu_core=warn,wgpu_hal=warn,naga=error,bevy_render=error,bevy_ecs=warn"
                             .to_string(),
                             update_subscriber: None,
                 }),
@@ -192,8 +191,13 @@ fn mouse_handler(
     };
 
     if mouse_button_input.pressed(MouseButton::Left) {
-        let spawn_count = 6;
-        spawn_boids(&mut commands, window, &mut counter, spawn_count, ship_atlas);
+        spawn_boids(
+            &mut commands,
+            window,
+            &mut counter,
+            BOID_SPAWN_COUNT,
+            ship_atlas,
+        );
     }
 }
 
@@ -232,8 +236,8 @@ fn spawn_boids(
             .insert(Boid {
                 acceleration: vec2(random_f32() - 0.5, random_f32() - 0.5),
                 velocity: vec2(
-                    rng.gen::<f32>() * MAX_VELOCITY - (MAX_VELOCITY * 0.5),
-                    rng.gen::<f32>() * MAX_VELOCITY - (MAX_VELOCITY * 0.5),
+                    rng.gen::<f32>() * BOID_MAX_VELOCITY - (BOID_MAX_VELOCITY * 0.5),
+                    rng.gen::<f32>() * BOID_MAX_VELOCITY - (BOID_MAX_VELOCITY * 0.5),
                 ),
             });
     }
@@ -261,6 +265,7 @@ fn window_bounce_collision_system(
 ) {
     let half_width = window.width() * 0.5;
     let half_height = window.height() * 0.5;
+    let half_size = BOID_SCALE / 2.0;
 
     for (mut boid, transform) in boid_query.iter_mut() {
         let x_vel = boid.velocity.x;
@@ -268,15 +273,15 @@ fn window_bounce_collision_system(
         let x_pos = transform.translation.x;
         let y_pos = transform.translation.y;
 
-        if (x_vel > 0.0 && x_pos + HALF_BOID_SIZE > half_width)
-            || (x_vel <= 0.0 && x_pos - HALF_BOID_SIZE < -(half_width))
+        if (x_vel > 0.0 && x_pos + half_size > half_width)
+            || (x_vel <= 0.0 && x_pos - half_size < -(half_width))
         {
             boid.velocity.x = -x_vel;
         }
-        if y_vel < 0.0 && y_pos - HALF_BOID_SIZE < -half_height {
+        if y_vel < 0.0 && y_pos - half_size < -half_height {
             boid.velocity.y = -y_vel;
         }
-        if y_pos + HALF_BOID_SIZE > half_height && y_vel > 0.0 {
+        if y_pos + half_size > half_height && y_vel > 0.0 {
             boid.velocity.y = 0.0;
         }
     }
@@ -369,7 +374,7 @@ impl PointDistance for BoidObject {
         let d_x = self.pos[0] - point[0];
         let d_y = self.pos[1] - point[1];
         let distance_to_origin_2 = d_x * d_x + d_y * d_y;
-        distance_to_origin_2 <= HALF_BOID_SIZE
+        distance_to_origin_2 <= (BOID_SCALE / 2.0)
     }
 }
 
@@ -410,11 +415,7 @@ fn boid_acceleration_system(
         let local_boids = tree
             .nearest_neighbor_iter_with_distance_2(&[pos[0], pos[1]])
             .take(BOID_GROUP_SIZE)
-            .filter(|(b, v)| {
-                b.id != entity_id
-                    && *v <= BOID_PERCEPTION
-                    && b.id % (BOID_GROUP_SIZE as u32) == entity_id % (BOID_GROUP_SIZE as u32)
-            })
+            .filter(|(b, v)| b.id != entity_id && *v <= BOID_PERCEPTION)
             .map(|(b, _)| b)
             .collect::<Vec<&BoidObject>>();
 
@@ -422,12 +423,16 @@ fn boid_acceleration_system(
         let alignment = boids_alignment((&boid, &transform), &local_boids);
         let cohesion = boids_cohesion((&boid, &transform), &local_boids);
         let separation = boids_separation((&boid, &transform), &local_boids);
+        if entity_id % 30 == 0 {
+            info!("entity_id {entity_id} alignment {alignment} cohesion {cohesion} separation {separation} neighbors {neighbors}",
+                neighbors = local_boids.len()
+            );
+        }
+        let dir_vel = vec2(0.2, 0.2) * delta_speed;
         if entity_id % 2 == 0 {
-            boid.acceleration +=
-                (alignment + cohesion + separation + vec2(-0.002, 0.002)).mul(delta_speed);
+            boid.acceleration += (alignment + cohesion + separation + dir_vel).mul(delta_speed);
         } else {
-            boid.acceleration +=
-                (alignment + cohesion + separation + vec2(0.002, 0.002)).mul(delta_speed);
+            boid.acceleration += (alignment + cohesion + separation - dir_vel).mul(delta_speed);
         }
         boid.acceleration = set_max_acc(BOID_MAX_FORCE, &boid.acceleration);
     }
