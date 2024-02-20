@@ -1,7 +1,7 @@
 use bevy::utils::Duration;
 use bevy::{
     asset::AssetServer,
-    diagnostic::{Diagnostics, FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin},
+    diagnostic::{Diagnostics, DiagnosticsStore, FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin},
     math::{Vec2, Vec3, *},
     prelude::*,
     sprite::TextureAtlas,
@@ -68,8 +68,9 @@ fn start() -> Result<(), JsValue> {
                         position: WindowPosition::Automatic,
                         present_mode: PresentMode::Fifo,
                         resizable: true,
-                        fit_canvas_to_parent: true,
+                        // fit_canvas_to_parent: true,
                         // canvas: Some("#canvas".to_string()),
+                        canvas: Default::default(),
                         ..default()
                     }
                     .into(),
@@ -80,16 +81,17 @@ fn start() -> Result<(), JsValue> {
                     filter:
                         "warn,wgpu=error,wgpu_core=warn,wgpu_hal=warn,naga=error,bevy_render=error,bevy_ecs=warn"
                             .to_string(),
+                            update_subscriber: None,
                 }),
         )
-        .add_plugin(FrameTimeDiagnosticsPlugin::default())
-        .add_plugin(LogDiagnosticsPlugin::default())
-        .add_startup_system(setup)
-        .add_system(mouse_handler)
-        .add_system(counter_system)
-        .add_system(boid_move_system)
-        .add_system(collision_system)
-        .add_system(boid_acceleration_system.run_if(on_timer(Duration::from_secs_f32(1. / 60.))))
+        .add_plugins(FrameTimeDiagnosticsPlugin::default())
+        .add_plugins(LogDiagnosticsPlugin::default())
+        .add_systems(Startup, setup)
+        .add_systems(Update, mouse_handler)
+        .add_systems(Update, counter_system)
+        .add_systems(Update, boid_move_system)
+        .add_systems(Update, collision_system)
+        .add_systems(Update, boid_acceleration_system.run_if(on_timer(Duration::from_secs_f32(1. / 60.))))
         .run();
 
     Ok(())
@@ -104,7 +106,7 @@ struct StatsText;
 fn setup(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
-    texture_atlases: ResMut<Assets<TextureAtlas>>,
+    texture_atlases: ResMut<Assets<TextureAtlasLayout>>,
 ) {
     commands.spawn(Camera2dBundle::default());
 
@@ -152,40 +154,37 @@ fn setup(
             ])
             .with_style(Style {
                 position_type: PositionType::Absolute,
-                position: UiRect {
-                    top: Val::Px(5.0),
-                    left: Val::Px(5.0),
-                    ..default()
-                },
+                top: Val::Px(5.0),
+                left: Val::Px(5.0),
                 ..default()
             }),
         )
         .insert(StatsText);
 }
 
-#[derive(Deref, Resource)]
-struct ShipAtlas(Handle<TextureAtlas>);
+#[derive(Resource)]
+struct ShipAtlas {
+    pub image: Handle<Image>,
+    pub layout: Handle<TextureAtlasLayout>,
+}
 
 fn load_ships_atlas(
     asset_server: &AssetServer,
-    mut texture_atlases: ResMut<Assets<TextureAtlas>>,
+    mut texture_atlases: ResMut<Assets<TextureAtlasLayout>>,
 ) -> ShipAtlas {
     let texture_handle = asset_server.load("ships001.png");
-    let texture_atlas = TextureAtlas::from_grid(
-        texture_handle,
-        Vec2::new(14.0, 14.0),
-        16,
-        32,
-        Some(vec2(2.0, 2.0)),
-        None,
-    );
-    let atlas_handle = texture_atlases.add(texture_atlas);
-    ShipAtlas(atlas_handle)
+    let texture_atlas =
+        TextureAtlasLayout::from_grid(Vec2::new(14.0, 14.0), 32, 16, Some(vec2(2.0, 2.0)), None);
+    let texture_atlas_handle = texture_atlases.add(texture_atlas);
+    ShipAtlas {
+        image: texture_handle,
+        layout: texture_atlas_handle,
+    }
 }
 
 fn mouse_handler(
     mut commands: Commands,
-    mouse_button_input: Res<Input<MouseButton>>,
+    mouse_button_input: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window, With<PrimaryWindow>>,
     mut counter: ResMut<BoidCounter>,
     ship_atlas: Res<ShipAtlas>,
@@ -222,9 +221,12 @@ fn spawn_boids(
 
         commands
             .spawn(SpriteSheetBundle {
-                texture_atlas: ship_atlas.clone(),
-                sprite: TextureAtlasSprite {
+                atlas: TextureAtlas {
+                    layout: ship_atlas.layout.clone(),
                     index: rng.gen::<usize>() % (16 * 32),
+                },
+                texture: ship_atlas.image.clone(),
+                sprite: Sprite {
                     anchor: bevy::sprite::Anchor::TopCenter,
                     ..Default::default()
                 },
@@ -313,7 +315,7 @@ fn window_teleport_collision_system(
 }
 
 fn counter_system(
-    diagnostics: Res<Diagnostics>,
+    diagnostics: Res<DiagnosticsStore>,
     counter: Res<BoidCounter>,
     mut query: Query<&mut Text, With<StatsText>>,
 ) {
@@ -323,7 +325,7 @@ fn counter_system(
         text.sections[1].value = format!("{}", counter.count);
     }
 
-    if let Some(fps) = diagnostics.get(FrameTimeDiagnosticsPlugin::FPS) {
+    if let Some(fps) = diagnostics.get(&FrameTimeDiagnosticsPlugin::FPS) {
         if let Some(average) = fps.average() {
             text.sections[3].value = format!("{:.2}", average);
         }
