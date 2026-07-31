@@ -1,15 +1,15 @@
-use bevy::utils::Duration;
 use bevy::{
     diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin},
     math::*,
     prelude::*,
+    sprite::Anchor,
     time::common_conditions::on_timer,
     window::PrimaryWindow,
-    window::{PresentMode, WindowMode},
+    window::{PresentMode, WindowMode, WindowResolution},
 };
 use rand::{thread_rng, Rng};
 use rstar::{PointDistance, RTree, RTreeObject, AABB};
-use std::{f32::consts::FRAC_PI_2, ops::Div, ops::Mul, ops::Sub};
+use std::{f32::consts::FRAC_PI_2, ops::Div, ops::Mul, ops::Sub, time::Duration};
 use wasm_bindgen::prelude::*;
 
 const BOID_SCALE: f32 = 0.28;
@@ -53,14 +53,13 @@ fn start() -> Result<(), JsValue> {
     info!("start");
 
     App::new()
-        .insert_resource(Msaa::default())
         .add_plugins(
             DefaultPlugins
                 .build()
                 .set(WindowPlugin {
                     primary_window: Window {
                         title: "Bitoids".to_string(),
-                        resolution: (1980.0, 1200.0).into(),
+                        resolution: WindowResolution::new(1980, 1200),
                         mode: WindowMode::Windowed,
                         position: WindowPosition::Automatic,
                         present_mode: PresentMode::Fifo,
@@ -78,10 +77,10 @@ fn start() -> Result<(), JsValue> {
                     filter:
                         "info,wgpu=error,wgpu_core=warn,wgpu_hal=warn,naga=error,bevy_render=error,bevy_ecs=warn"
                             .to_string(),
-                            update_subscriber: None,
+                            ..default()
                 }),
         )
-        .add_plugins(FrameTimeDiagnosticsPlugin)
+        .add_plugins(FrameTimeDiagnosticsPlugin::default())
         .add_plugins(LogDiagnosticsPlugin::default())
         .add_systems(Startup, setup)
         .add_systems(Update, mouse_handler)
@@ -98,65 +97,58 @@ fn start() -> Result<(), JsValue> {
 // struct BirdTexture(Handle<Image>);
 
 #[derive(Component)]
-struct StatsText;
+struct CountText;
+
+#[derive(Component)]
+struct FpsText;
 
 fn setup(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
     texture_atlases: ResMut<Assets<TextureAtlasLayout>>,
 ) {
-    commands.spawn(Camera2dBundle::default());
+    commands.spawn((Camera2d, Msaa::default()));
 
-    let font = asset_server.load("fonts/FiraSans-Bold.ttf");
+    let font: FontSource = asset_server.load("fonts/FiraSans-Bold.ttf").into();
     let ship_atlas = load_ships_atlas(&asset_server, texture_atlases);
     commands.insert_resource(ship_atlas);
 
     commands.insert_resource(BoidCounter { count: 0 });
 
+    let label_font = TextFont {
+        font: font.clone(),
+        font_size: FontSize::Px(40.0),
+        ..default()
+    };
+    let label_color = TextColor(Color::srgb(0.0, 1.0, 0.0));
+    let value_color = TextColor(Color::srgb(0.0, 1.0, 1.0));
+
     commands
-        .spawn(
-            TextBundle::from_sections([
-                TextSection::new(
-                    "Boid Count: ",
-                    TextStyle {
-                        font: font.clone(),
-                        font_size: 40.0,
-                        color: Color::rgb(0.0, 1.0, 0.0),
-                    },
-                ),
-                TextSection::new(
-                    "",
-                    TextStyle {
-                        font: font.clone(),
-                        font_size: 40.0,
-                        color: Color::rgb(0.0, 1.0, 1.0),
-                    },
-                ),
-                TextSection::new(
-                    "\nAverage FPS: ",
-                    TextStyle {
-                        font: font.clone(),
-                        font_size: 40.0,
-                        color: Color::rgb(0.0, 1.0, 0.0),
-                    },
-                ),
-                TextSection::new(
-                    "",
-                    TextStyle {
-                        font: font.clone(),
-                        font_size: 40.0,
-                        color: Color::rgb(0.0, 1.0, 1.0),
-                    },
-                ),
-            ])
-            .with_style(Style {
+        .spawn((
+            Text::new("Boid Count: "),
+            label_font.clone(),
+            label_color,
+            Node {
                 position_type: PositionType::Absolute,
                 top: Val::Px(5.0),
                 left: Val::Px(5.0),
                 ..default()
-            }),
-        )
-        .insert(StatsText);
+            },
+        ))
+        .with_children(|parent| {
+            parent.spawn((
+                TextSpan::default(),
+                label_font.clone(),
+                value_color,
+                CountText,
+            ));
+            parent.spawn((
+                TextSpan::new("\nAverage FPS: "),
+                label_font.clone(),
+                label_color,
+            ));
+            parent.spawn((TextSpan::default(), label_font.clone(), value_color, FpsText));
+        });
 }
 
 #[derive(Resource)]
@@ -171,7 +163,7 @@ fn load_ships_atlas(
 ) -> ShipAtlas {
     let texture_handle = asset_server.load("ships001.png");
     let texture_atlas =
-        TextureAtlasLayout::from_grid(Vec2::new(14.0, 14.0), 32, 16, Some(vec2(2.0, 2.0)), None);
+        TextureAtlasLayout::from_grid(UVec2::new(14, 14), 32, 16, Some(UVec2::new(2, 2)), None);
     let texture_atlas_handle = texture_atlases.add(texture_atlas);
     ShipAtlas {
         image: texture_handle,
@@ -186,7 +178,7 @@ fn mouse_handler(
     mut counter: ResMut<BoidCounter>,
     ship_atlas: Res<ShipAtlas>,
 ) {
-    let Ok(window) = windows.get_single() else {
+    let Ok(window) = windows.single() else {
         return;
     };
 
@@ -215,31 +207,28 @@ fn spawn_boids(
     for count in 0..spawn_count {
         let boid_z = (counter.count + count) as f32 * 0.00001;
 
-        commands
-            .spawn(SpriteSheetBundle {
-                atlas: TextureAtlas {
+        commands.spawn((
+            Sprite::from_atlas_image(
+                ship_atlas.image.clone(),
+                TextureAtlas {
                     layout: ship_atlas.layout.clone(),
                     index: rng.gen::<usize>() % (16 * 32),
                 },
-                texture: ship_atlas.image.clone(),
-                sprite: Sprite {
-                    anchor: bevy::sprite::Anchor::TopCenter,
-                    ..Default::default()
-                },
-                transform: Transform {
-                    translation: Vec3::new(boid_x, boid_y, boid_z),
-                    scale: Vec3::splat(BOID_SCALE * BOID_SPRITE_SCALE),
-                    ..default()
-                },
+            ),
+            Anchor::TOP_CENTER,
+            Transform {
+                translation: Vec3::new(boid_x, boid_y, boid_z),
+                scale: Vec3::splat(BOID_SCALE * BOID_SPRITE_SCALE),
                 ..default()
-            })
-            .insert(Boid {
+            },
+            Boid {
                 acceleration: vec2(random_f32() - 0.5, random_f32() - 0.5),
                 velocity: vec2(
                     rng.gen::<f32>() * BOID_MAX_VELOCITY - (BOID_MAX_VELOCITY * 0.5),
                     rng.gen::<f32>() * BOID_MAX_VELOCITY - (BOID_MAX_VELOCITY * 0.5),
                 ),
-            });
+            },
+        ));
     }
     counter.count += spawn_count;
 }
@@ -248,7 +237,7 @@ pub fn collision_system(
     windows: Query<&Window, With<PrimaryWindow>>,
     boid_query: Query<(&mut Boid, &mut Transform)>,
 ) {
-    let Ok(window) = windows.get_single() else {
+    let Ok(window) = windows.single() else {
         return;
     };
 
@@ -314,23 +303,26 @@ fn window_teleport_collision_system(
 fn counter_system(
     diagnostics: Res<DiagnosticsStore>,
     counter: Res<BoidCounter>,
-    mut query: Query<&mut Text, With<StatsText>>,
+    mut count_query: Query<&mut TextSpan, (With<CountText>, Without<FpsText>)>,
+    mut fps_query: Query<&mut TextSpan, With<FpsText>>,
 ) {
-    let mut text = query.single_mut();
-
     if counter.is_changed() {
-        text.sections[1].value = format!("{}", counter.count);
+        if let Ok(mut span) = count_query.single_mut() {
+            **span = format!("{}", counter.count);
+        }
     }
 
     if let Some(fps) = diagnostics.get(&FrameTimeDiagnosticsPlugin::FPS) {
         if let Some(average) = fps.average() {
-            text.sections[3].value = format!("{:.2}", average);
+            if let Ok(mut span) = fps_query.single_mut() {
+                **span = format!("{:.2}", average);
+            }
         }
     };
 }
 
 fn boid_move_system(time: Res<Time>, mut query: Query<(Entity, &mut Boid, &mut Transform)>) {
-    let delta_speed = time.delta_seconds() * BOID_SPEED;
+    let delta_speed = time.delta_secs() * BOID_SPEED;
     for (_, mut boid, mut transform) in query.iter_mut() {
         let acc = boid.acceleration;
         boid.velocity += acc;
@@ -342,7 +334,7 @@ fn boid_move_system(time: Res<Time>, mut query: Query<(Entity, &mut Boid, &mut T
         let angle = { vel.y.atan2(vel.x) + FRAC_PI_2 * 3.0 };
         transform.rotation = transform.rotation.slerp(
             Quat::from_axis_angle(Vec3::new(0., 0., 1.), angle),
-            time.delta_seconds() * BOID_ROTATION,
+            time.delta_secs() * BOID_ROTATION,
         );
     }
 }
@@ -394,7 +386,7 @@ fn boid_acceleration_system(
         let boid_array = query
             .iter()
             .map(|(entity, boid, transform)| BoidObject {
-                id: entity.index(),
+                id: entity.index().index(),
                 pos: transform.translation.truncate(),
                 velocity: boid.velocity,
             })
@@ -402,11 +394,11 @@ fn boid_acceleration_system(
         RTree::bulk_load(boid_array)
     };
 
-    let delta_speed = time.delta_seconds() * BOID_SPEED;
+    let delta_speed = time.delta_secs() * BOID_SPEED;
     let gid = *group_id;
 
     for (entity, mut boid, transform) in query.iter_mut() {
-        let entity_id = entity.index();
+        let entity_id = entity.index().index();
         if entity_id % BOID_WAKE_PER_SECOND != gid % BOID_WAKE_PER_SECOND {
             continue;
         }
@@ -419,7 +411,7 @@ fn boid_acceleration_system(
             .map(|(b, _)| b)
             .collect::<Vec<&BoidObject>>();
 
-        let entity_id = entity.index();
+        let entity_id = entity.index().index();
         let alignment = boids_alignment((&boid, &transform), &local_boids);
         let cohesion = boids_cohesion((&boid, &transform), &local_boids);
         let separation = boids_separation((&boid, &transform), &local_boids);
