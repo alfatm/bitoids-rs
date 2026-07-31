@@ -9,24 +9,29 @@ use bevy::{
 };
 use rand::{thread_rng, Rng};
 use rstar::{PointDistance, RTree, RTreeObject, AABB};
-use std::{f32::consts::FRAC_PI_2, ops::Div, ops::Mul, ops::Sub, time::Duration};
+use std::{f32::consts::FRAC_PI_2, ops::Mul, time::Duration};
 use wasm_bindgen::prelude::*;
 
 const BOID_SCALE: f32 = 0.28;
 const BOID_SPRITE_SCALE: f32 = 6.0;
-const BOID_MAX_FORCE: f32 = 10.0;
+// Forces below are steering weights in velocity units per second, so they stay
+// comparable with BOID_MAX_VELOCITY instead of the raw pixel distances used before.
+const BOID_MAX_FORCE: f32 = 4.0;
 const BOID_MAX_VELOCITY: f32 = 1.4;
 const BOID_MIN_VELOCITY: f32 = 0.8;
-const BOID_COHESION: f32 = 40.0;
+const BOID_COHESION: f32 = 1.0;
 const BOID_GROUP_SIZE: usize = 20;
-const BOID_SEPARATION: f32 = 20.0;
-const BOID_SEPARATION_DISTANCE: f32 = 10.0;
-const BOID_PERCEPTION: f32 = 30.0;
-const BOID_ALIGNMENT: f32 = 10.0;
+const BOID_SEPARATION: f32 = 1.6;
+const BOID_SEPARATION_DISTANCE: f32 = 25.0;
+const BOID_SEPARATION_DISTANCE_2: f32 = BOID_SEPARATION_DISTANCE * BOID_SEPARATION_DISTANCE;
+const BOID_PERCEPTION: f32 = 70.0;
+const BOID_PERCEPTION_2: f32 = BOID_PERCEPTION * BOID_PERCEPTION;
+const BOID_ALIGNMENT: f32 = 1.2;
 const BOID_SPEED: f32 = 200.0;
 const BOID_ROTATION: f32 = 5.0;
 const BOID_WAKE_PER_SECOND: u32 = 20;
 const BOID_SPAWN_COUNT: usize = 5;
+const BOID_SPAWN_JITTER: f32 = 20.0;
 const WINDOW_BORDER_COLLISION: bool = false;
 
 #[derive(Resource)]
@@ -206,6 +211,11 @@ fn spawn_boids(
 
     for count in 0..spawn_count {
         let boid_z = (counter.count + count) as f32 * 0.00001;
+        // Scatter the batch: boids sharing one exact position have no separation direction.
+        let jitter = vec2(
+            (rng.gen::<f32>() - 0.5) * BOID_SPAWN_JITTER,
+            (rng.gen::<f32>() - 0.5) * BOID_SPAWN_JITTER,
+        );
 
         commands.spawn((
             Sprite::from_atlas_image(
@@ -217,7 +227,7 @@ fn spawn_boids(
             ),
             Anchor::TOP_CENTER,
             Transform {
-                translation: Vec3::new(boid_x, boid_y, boid_z),
+                translation: Vec3::new(boid_x + jitter.x, boid_y + jitter.y, boid_z),
                 scale: Vec3::splat(BOID_SCALE * BOID_SPRITE_SCALE),
                 ..default()
             },
@@ -321,20 +331,18 @@ fn counter_system(
     };
 }
 
-fn boid_move_system(time: Res<Time>, mut query: Query<(Entity, &mut Boid, &mut Transform)>) {
-    let delta_speed = time.delta_secs() * BOID_SPEED;
-    for (_, mut boid, mut transform) in query.iter_mut() {
-        let acc = boid.acceleration;
-        boid.velocity += acc;
+fn boid_move_system(time: Res<Time>, mut query: Query<(&mut Boid, &mut Transform)>) {
+    let delta = time.delta_secs();
+    for (mut boid, mut transform) in query.iter_mut() {
+        let steered = boid.velocity + boid.acceleration.mul(delta);
+        let velocity = set_velocity(BOID_MAX_VELOCITY, BOID_MIN_VELOCITY, &steered);
+        boid.velocity = velocity;
+        transform.translation += vec3(velocity.x, velocity.y, 0.0).mul(delta * BOID_SPEED);
 
-        let vel = boid.velocity;
-        boid.velocity = set_velocity(BOID_MAX_VELOCITY, BOID_MIN_VELOCITY, &vel);
-        transform.translation += vec3(boid.velocity.x, boid.velocity.y, 0.0).mul(delta_speed);
-
-        let angle = { vel.y.atan2(vel.x) + FRAC_PI_2 * 3.0 };
+        let angle = velocity.y.atan2(velocity.x) + FRAC_PI_2 * 3.0;
         transform.rotation = transform.rotation.slerp(
-            Quat::from_axis_angle(Vec3::new(0., 0., 1.), angle),
-            time.delta_secs() * BOID_ROTATION,
+            Quat::from_axis_angle(Vec3::Z, angle),
+            (delta * BOID_ROTATION).min(1.0),
         );
     }
 }
@@ -358,29 +366,25 @@ fn new_point(pos: &Vec2) -> AABB<[f32; 2]> {
 }
 
 impl PointDistance for BoidObject {
+    /// rstar compares this against squared AABB distances, so it must be squared too.
     fn distance_2(&self, point: &[f32; 2]) -> f32 {
-        self.pos.distance(vec2(point[0], point[1]))
+        self.pos.distance_squared(vec2(point[0], point[1]))
     }
 
     fn contains_point(&self, point: &[f32; 2]) -> bool {
-        let d_x = self.pos[0] - point[0];
-        let d_y = self.pos[1] - point[1];
-        let distance_to_origin_2 = d_x * d_x + d_y * d_y;
-        distance_to_origin_2 <= (BOID_SCALE / 2.0)
+        let radius = BOID_SCALE / 2.0;
+        self.distance_2(point) <= radius * radius
     }
 }
 
+/// A neighbour paired with its squared distance to the boid being updated.
+type Neighbor<'a> = (&'a BoidObject, f32);
+
 fn boid_acceleration_system(
-    time: Res<Time>,
-    mut update_time: Local<Duration>,
     mut group_id: Local<u32>,
-    mut query: Query<(Entity, &mut Boid, &mut Transform)>,
+    mut query: Query<(Entity, &mut Boid, &Transform)>,
 ) {
-    if (time.elapsed() - *update_time).as_secs_f64() < 0.1 / 60.0 {
-        return;
-    }
-    *update_time = time.elapsed();
-    *group_id += 1;
+    *group_id = group_id.wrapping_add(1);
 
     let tree = {
         let boid_array = query
@@ -394,91 +398,83 @@ fn boid_acceleration_system(
         RTree::bulk_load(boid_array)
     };
 
-    let delta_speed = time.delta_secs() * BOID_SPEED;
-    let gid = *group_id;
+    let wake_slot = *group_id % BOID_WAKE_PER_SECOND;
 
     for (entity, mut boid, transform) in query.iter_mut() {
         let entity_id = entity.index().index();
-        if entity_id % BOID_WAKE_PER_SECOND != gid % BOID_WAKE_PER_SECOND {
+        if entity_id % BOID_WAKE_PER_SECOND != wake_slot {
             continue;
         }
 
         let pos = transform.translation.truncate();
+        // Neighbours arrive nearest-first, so take_while stops the walk at the
+        // perception radius instead of scanning the whole tree for a full group.
         let local_boids = tree
-            .nearest_neighbor_iter_with_distance_2(&[pos[0], pos[1]])
+            .nearest_neighbor_iter_with_distance_2(&[pos.x, pos.y])
+            .take_while(|(_, distance_2)| *distance_2 <= BOID_PERCEPTION_2)
+            .filter(|(other, _)| other.id != entity_id)
             .take(BOID_GROUP_SIZE)
-            .filter(|(b, v)| b.id != entity_id && *v <= BOID_PERCEPTION)
-            .map(|(b, _)| b)
-            .collect::<Vec<&BoidObject>>();
+            .collect::<Vec<Neighbor>>();
 
-        let entity_id = entity.index().index();
-        let alignment = boids_alignment((&boid, &transform), &local_boids);
-        let cohesion = boids_cohesion((&boid, &transform), &local_boids);
-        let separation = boids_separation((&boid, &transform), &local_boids);
-        if entity_id % 30 == 0 {
-            info!("entity_id {entity_id} alignment {alignment} cohesion {cohesion} separation {separation} neighbors {neighbors}",
-                neighbors = local_boids.len()
-            );
-        }
-        let dir_vel = vec2(0.2, 0.2) * delta_speed;
-        if entity_id % 2 == 0 {
-            boid.acceleration += (alignment + cohesion + separation + dir_vel).mul(delta_speed);
-        } else {
-            boid.acceleration += (alignment + cohesion + separation - dir_vel).mul(delta_speed);
-        }
-        boid.acceleration = set_max_acc(BOID_MAX_FORCE, &boid.acceleration);
+        let steering = boids_alignment(&boid, &local_boids) * BOID_ALIGNMENT
+            + boids_cohesion(&boid, pos, &local_boids) * BOID_COHESION
+            + boids_separation(&boid, pos, &local_boids) * BOID_SEPARATION;
+
+        boid.acceleration = set_max_acc(BOID_MAX_FORCE, &steering);
     }
 }
 
-fn boids_alignment(current_boid: (&Boid, &Transform), local_boids: &[&BoidObject]) -> Vec2 {
-    let mut new_velocity = vec2(0.0, 0.0);
-    let local_boids_len = local_boids.len();
-    if local_boids_len == 0 {
-        return new_velocity;
-    }
-
-    for boid in local_boids.iter() {
-        new_velocity += boid.velocity;
-    }
-    new_velocity = new_velocity.div(local_boids_len as f32).normalize();
-    new_velocity = (new_velocity + current_boid.0.velocity) * BOID_ALIGNMENT;
-    new_velocity
+/// Reynolds steering: the force that turns `velocity` towards `desired`, capped at BOID_MAX_FORCE.
+fn steer_towards(desired: Vec2, velocity: Vec2) -> Vec2 {
+    let Some(direction) = desired.try_normalize() else {
+        return Vec2::ZERO;
+    };
+    set_max_acc(BOID_MAX_FORCE, &(direction * BOID_MAX_VELOCITY - velocity))
 }
 
-fn boids_cohesion(current_boid: (&Boid, &Transform), local_boids: &[&BoidObject]) -> Vec2 {
+fn boids_alignment(current_boid: &Boid, local_boids: &[Neighbor]) -> Vec2 {
+    if local_boids.is_empty() {
+        return Vec2::ZERO;
+    }
+
+    let mut average_velocity = vec2(0.0, 0.0);
+    for (boid, _) in local_boids.iter() {
+        average_velocity += boid.velocity;
+    }
+
+    steer_towards(average_velocity, current_boid.velocity)
+}
+
+fn boids_cohesion(current_boid: &Boid, pos: Vec2, local_boids: &[Neighbor]) -> Vec2 {
+    if local_boids.is_empty() {
+        return Vec2::ZERO;
+    }
+
     let mut average_position = vec2(0.0, 0.0);
-    let local_boids_len = local_boids.len();
-    if local_boids_len == 0 {
-        return average_position;
+    for (boid, _) in local_boids.iter() {
+        average_position += boid.pos;
     }
+    average_position /= local_boids.len() as f32;
 
-    for boid in local_boids.iter() {
-        average_position += boid.pos
-    }
-    average_position = average_position.div(local_boids_len as f32);
-    average_position = average_position.sub(current_boid.1.translation.truncate()) * BOID_COHESION;
-    average_position
+    steer_towards(average_position - pos, current_boid.velocity)
 }
 
-fn boids_separation(current_boid: (&Boid, &Transform), local_boids: &[&BoidObject]) -> Vec2 {
-    let mut average_separation = vec2(0.0, 0.0);
-    let local_boids_len = local_boids.len();
-    if local_boids_len == 0 {
-        return average_separation;
+fn boids_separation(current_boid: &Boid, pos: Vec2, local_boids: &[Neighbor]) -> Vec2 {
+    let mut push_away = vec2(0.0, 0.0);
+
+    for (boid, distance_2) in local_boids.iter() {
+        if *distance_2 > BOID_SEPARATION_DISTANCE_2 {
+            continue;
+        }
+        // Weight by 1/distance so the closest crowding dominates; coincident
+        // boids have no direction to flee and are skipped instead of dividing by zero.
+        let Some(direction) = (pos - boid.pos).try_normalize() else {
+            continue;
+        };
+        push_away += direction / distance_2.sqrt();
     }
 
-    for boid in local_boids.iter() {
-        let difference_vec = boid.pos.sub(current_boid.1.translation.truncate()).div(
-            current_boid
-                .1
-                .translation
-                .distance(vec3(boid.pos[0], boid.pos[1], 0.0))
-                * BOID_SEPARATION_DISTANCE,
-        );
-        average_separation -= difference_vec;
-    }
-
-    average_separation * BOID_SEPARATION
+    steer_towards(push_away, current_boid.velocity)
 }
 
 fn set_max_acc(max_acc: f32, acc: &Vec2) -> Vec2 {
