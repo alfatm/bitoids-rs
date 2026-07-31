@@ -8,31 +8,52 @@ use bevy::{
     window::{PresentMode, WindowMode, WindowResolution},
 };
 use rand::{thread_rng, Rng};
-use rstar::{PointDistance, RTree, RTreeObject, AABB};
 use std::{f32::consts::FRAC_PI_2, ops::Mul, time::Duration};
 use wasm_bindgen::prelude::*;
 
 const BOID_SCALE: f32 = 0.28;
 const BOID_SPRITE_SCALE: f32 = 6.0;
-// Forces below are steering weights in velocity units per second, so they stay
-// comparable with BOID_MAX_VELOCITY instead of the raw pixel distances used before.
-const BOID_MAX_FORCE: f32 = 4.0;
-const BOID_MAX_VELOCITY: f32 = 1.4;
-const BOID_MIN_VELOCITY: f32 = 0.8;
-const BOID_COHESION: f32 = 1.0;
-const BOID_GROUP_SIZE: usize = 20;
-const BOID_SEPARATION: f32 = 1.6;
-const BOID_SEPARATION_DISTANCE: f32 = 25.0;
-const BOID_SEPARATION_DISTANCE_2: f32 = BOID_SEPARATION_DISTANCE * BOID_SEPARATION_DISTANCE;
-const BOID_PERCEPTION: f32 = 70.0;
-const BOID_PERCEPTION_2: f32 = BOID_PERCEPTION * BOID_PERCEPTION;
-const BOID_ALIGNMENT: f32 = 1.2;
-const BOID_SPEED: f32 = 200.0;
-const BOID_ROTATION: f32 = 5.0;
 const BOID_WAKE_PER_SECOND: u32 = 20;
 const BOID_SPAWN_COUNT: usize = 5;
 const BOID_SPAWN_JITTER: f32 = 20.0;
 const WINDOW_BORDER_COLLISION: bool = false;
+
+/// Flocking knobs, tunable at runtime. Forces are steering weights in velocity
+/// units per second, so they stay comparable with `max_velocity` rather than
+/// with raw pixel distances. Build with `--features inspector` for live sliders.
+#[derive(Resource, Reflect)]
+#[reflect(Resource)]
+pub struct BoidParams {
+    pub max_force: f32,
+    pub max_velocity: f32,
+    pub min_velocity: f32,
+    pub alignment: f32,
+    pub cohesion: f32,
+    pub separation: f32,
+    pub separation_distance: f32,
+    pub perception: f32,
+    pub group_size: usize,
+    pub speed: f32,
+    pub rotation: f32,
+}
+
+impl Default for BoidParams {
+    fn default() -> Self {
+        Self {
+            max_force: 4.0,
+            max_velocity: 1.4,
+            min_velocity: 0.8,
+            alignment: 1.2,
+            cohesion: 1.0,
+            separation: 1.6,
+            separation_distance: 25.0,
+            perception: 70.0,
+            group_size: 20,
+            speed: 200.0,
+            rotation: 5.0,
+        }
+    }
+}
 
 #[derive(Resource)]
 struct BoidCounter {
@@ -57,8 +78,9 @@ fn start() -> Result<(), JsValue> {
 
     info!("start");
 
-    App::new()
-        .add_plugins(
+    let mut app = App::new();
+
+    app.add_plugins(
             DefaultPlugins
                 .build()
                 .set(WindowPlugin {
@@ -87,13 +109,35 @@ fn start() -> Result<(), JsValue> {
         )
         .add_plugins(FrameTimeDiagnosticsPlugin::default())
         .add_plugins(LogDiagnosticsPlugin::default())
+        .init_resource::<BoidParams>()
+        .register_type::<BoidParams>()
         .add_systems(Startup, setup)
         .add_systems(Update, mouse_handler)
-        .add_systems(Update, counter_system)
-        .add_systems(Update, boid_move_system)
-        .add_systems(Update, collision_system)
-        .add_systems(Update, boid_acceleration_system.run_if(on_timer(Duration::from_secs_f32(1. / 60.))))
-        .run();
+        .add_systems(
+            Update,
+            counter_system.run_if(on_timer(Duration::from_millis(250))),
+        )
+        // Steering reads positions, movement writes them, wrapping corrects them.
+        // Without the chain Bevy is free to run these in any order each frame.
+        .add_systems(
+            Update,
+            (
+                boid_acceleration_system
+                    .run_if(on_timer(Duration::from_secs_f32(1. / 60.))),
+                boid_move_system,
+                collision_system,
+            )
+                .chain(),
+        );
+
+    // EguiPlugin must land before the inspector: the quick plugin panics otherwise.
+    #[cfg(feature = "inspector")]
+    app.add_plugins((
+        bevy_inspector_egui::bevy_egui::EguiPlugin::default(),
+        bevy_inspector_egui::quick::ResourceInspectorPlugin::<BoidParams>::default(),
+    ));
+
+    app.run();
 
     Ok(())
 }
@@ -182,6 +226,7 @@ fn mouse_handler(
     windows: Query<&Window, With<PrimaryWindow>>,
     mut counter: ResMut<BoidCounter>,
     ship_atlas: Res<ShipAtlas>,
+    params: Res<BoidParams>,
 ) {
     let Ok(window) = windows.single() else {
         return;
@@ -194,6 +239,7 @@ fn mouse_handler(
             &mut counter,
             BOID_SPAWN_COUNT,
             ship_atlas,
+            &params,
         );
     }
 }
@@ -204,6 +250,7 @@ fn spawn_boids(
     counter: &mut BoidCounter,
     spawn_count: usize,
     ship_atlas: Res<ShipAtlas>,
+    params: &BoidParams,
 ) {
     let mut rng = thread_rng();
     let boid_x = rng.gen::<f32>() * window.width() - window.width() / 2.0;
@@ -234,8 +281,8 @@ fn spawn_boids(
             Boid {
                 acceleration: vec2(random_f32() - 0.5, random_f32() - 0.5),
                 velocity: vec2(
-                    rng.gen::<f32>() * BOID_MAX_VELOCITY - (BOID_MAX_VELOCITY * 0.5),
-                    rng.gen::<f32>() * BOID_MAX_VELOCITY - (BOID_MAX_VELOCITY * 0.5),
+                    rng.gen::<f32>() * params.max_velocity - (params.max_velocity * 0.5),
+                    rng.gen::<f32>() * params.max_velocity - (params.max_velocity * 0.5),
                 ),
             },
         ));
@@ -331,18 +378,22 @@ fn counter_system(
     };
 }
 
-fn boid_move_system(time: Res<Time>, mut query: Query<(&mut Boid, &mut Transform)>) {
+fn boid_move_system(
+    time: Res<Time>,
+    params: Res<BoidParams>,
+    mut query: Query<(&mut Boid, &mut Transform)>,
+) {
     let delta = time.delta_secs();
     for (mut boid, mut transform) in query.iter_mut() {
         let steered = boid.velocity + boid.acceleration.mul(delta);
-        let velocity = set_velocity(BOID_MAX_VELOCITY, BOID_MIN_VELOCITY, &steered);
+        let velocity = set_velocity(params.max_velocity, params.min_velocity, &steered);
         boid.velocity = velocity;
-        transform.translation += vec3(velocity.x, velocity.y, 0.0).mul(delta * BOID_SPEED);
+        transform.translation += vec3(velocity.x, velocity.y, 0.0).mul(delta * params.speed);
 
         let angle = velocity.y.atan2(velocity.x) + FRAC_PI_2 * 3.0;
         transform.rotation = transform.rotation.slerp(
             Quat::from_axis_angle(Vec3::Z, angle),
-            (delta * BOID_ROTATION).min(1.0),
+            (delta * params.rotation).min(1.0),
         );
     }
 }
@@ -353,52 +404,112 @@ pub struct BoidObject {
     pub velocity: Vec2,
 }
 
-impl RTreeObject for BoidObject {
-    type Envelope = AABB<[f32; 2]>;
-
-    fn envelope(&self) -> Self::Envelope {
-        new_point(&self.pos)
-    }
+/// Uniform bucket grid over the wrapping play field. Cells are at least one
+/// perception radius wide, so every possible neighbour lives in the 3x3 block
+/// around a boid's own cell. Built with a counting sort: two flat allocations
+/// per rebuild, no per-cell `Vec`.
+struct SpatialGrid {
+    cols: usize,
+    rows: usize,
+    cell: Vec2,
+    world: Vec2,
+    cell_start: Vec<u32>,
+    items: Vec<u32>,
 }
 
-fn new_point(pos: &Vec2) -> AABB<[f32; 2]> {
-    AABB::from_point([pos[0], pos[1]])
-}
+impl SpatialGrid {
+    fn build(boids: &[BoidObject], world: Vec2, perception: f32) -> Self {
+        // At least 3 columns and rows, otherwise the 3x3 block would visit the
+        // same cell twice and count those neighbours twice.
+        let cols = ((world.x / perception) as usize).max(3);
+        let rows = ((world.y / perception) as usize).max(3);
 
-impl PointDistance for BoidObject {
-    /// rstar compares this against squared AABB distances, so it must be squared too.
-    fn distance_2(&self, point: &[f32; 2]) -> f32 {
-        self.pos.distance_squared(vec2(point[0], point[1]))
+        let mut grid = Self {
+            cols,
+            rows,
+            cell: vec2(world.x / cols as f32, world.y / rows as f32),
+            world,
+            cell_start: vec![0; cols * rows + 1],
+            items: vec![0; boids.len()],
+        };
+
+        for boid in boids.iter() {
+            let cell = grid.cell_of(boid.pos);
+            grid.cell_start[cell + 1] += 1;
+        }
+        for i in 1..grid.cell_start.len() {
+            grid.cell_start[i] += grid.cell_start[i - 1];
+        }
+
+        let mut cursor = grid.cell_start.clone();
+        for (index, boid) in boids.iter().enumerate() {
+            let cell = grid.cell_of(boid.pos);
+            grid.items[cursor[cell] as usize] = index as u32;
+            cursor[cell] += 1;
+        }
+
+        grid
     }
 
-    fn contains_point(&self, point: &[f32; 2]) -> bool {
-        let radius = BOID_SCALE / 2.0;
-        self.distance_2(point) <= radius * radius
+    fn cell_of(&self, pos: Vec2) -> usize {
+        let col = ((pos.x + self.world.x * 0.5) / self.cell.x).floor() as isize;
+        let row = ((pos.y + self.world.y * 0.5) / self.cell.y).floor() as isize;
+        let col = col.rem_euclid(self.cols as isize) as usize;
+        let row = row.rem_euclid(self.rows as isize) as usize;
+        row * self.cols + col
+    }
+
+    /// Collects every boid in the 3x3 block around `pos`, wrapping at the field
+    /// edges so a flock straddling the seam still sees itself as one flock.
+    fn collect_nearby(&self, pos: Vec2, out: &mut Vec<u32>) {
+        let center = self.cell_of(pos);
+        let col = (center % self.cols) as isize;
+        let row = (center / self.cols) as isize;
+
+        for row_offset in -1..=1 {
+            let r = (row + row_offset).rem_euclid(self.rows as isize) as usize;
+            for col_offset in -1..=1 {
+                let c = (col + col_offset).rem_euclid(self.cols as isize) as usize;
+                let cell = r * self.cols + c;
+                let range = self.cell_start[cell] as usize..self.cell_start[cell + 1] as usize;
+                out.extend_from_slice(&self.items[range]);
+            }
+        }
+    }
+
+    /// Shortest displacement between two points on the wrapping field.
+    fn wrap_delta(&self, delta: Vec2) -> Vec2 {
+        delta - self.world * (delta / self.world).round()
     }
 }
-
-/// A neighbour paired with its squared distance to the boid being updated.
-type Neighbor<'a> = (&'a BoidObject, f32);
 
 fn boid_acceleration_system(
+    params: Res<BoidParams>,
+    windows: Query<&Window, With<PrimaryWindow>>,
     mut group_id: Local<u32>,
+    mut candidates: Local<Vec<u32>>,
     mut query: Query<(Entity, &mut Boid, &Transform)>,
 ) {
-    *group_id = group_id.wrapping_add(1);
-
-    let tree = {
-        let boid_array = query
-            .iter()
-            .map(|(entity, boid, transform)| BoidObject {
-                id: entity.index().index(),
-                pos: transform.translation.truncate(),
-                velocity: boid.velocity,
-            })
-            .collect::<Vec<BoidObject>>();
-        RTree::bulk_load(boid_array)
+    let Ok(window) = windows.single() else {
+        return;
     };
+    let world = vec2(window.width(), window.height());
 
+    *group_id = group_id.wrapping_add(1);
     let wake_slot = *group_id % BOID_WAKE_PER_SECOND;
+
+    let boids = query
+        .iter()
+        .map(|(entity, boid, transform)| BoidObject {
+            id: entity.index().index(),
+            pos: transform.translation.truncate(),
+            velocity: boid.velocity,
+        })
+        .collect::<Vec<BoidObject>>();
+    let grid = SpatialGrid::build(&boids, world, params.perception);
+
+    let perception_2 = params.perception * params.perception;
+    let separation_2 = params.separation_distance * params.separation_distance;
 
     for (entity, mut boid, transform) in query.iter_mut() {
         let entity_id = entity.index().index();
@@ -407,74 +518,69 @@ fn boid_acceleration_system(
         }
 
         let pos = transform.translation.truncate();
-        // Neighbours arrive nearest-first, so take_while stops the walk at the
-        // perception radius instead of scanning the whole tree for a full group.
-        let local_boids = tree
-            .nearest_neighbor_iter_with_distance_2(&[pos.x, pos.y])
-            .take_while(|(_, distance_2)| *distance_2 <= BOID_PERCEPTION_2)
-            .filter(|(other, _)| other.id != entity_id)
-            .take(BOID_GROUP_SIZE)
-            .collect::<Vec<Neighbor>>();
+        candidates.clear();
+        grid.collect_nearby(pos, &mut candidates);
 
-        let steering = boids_alignment(&boid, &local_boids) * BOID_ALIGNMENT
-            + boids_cohesion(&boid, pos, &local_boids) * BOID_COHESION
-            + boids_separation(&boid, pos, &local_boids) * BOID_SEPARATION;
+        // One pass feeds all three rules: the heading to match, the offsets to
+        // close on, and the crowding to escape. Summing offsets rather than
+        // absolute positions is what keeps cohesion sane across the wrap seam.
+        let mut heading_sum = Vec2::ZERO;
+        let mut offset_sum = Vec2::ZERO;
+        let mut push_away = Vec2::ZERO;
+        let mut neighbors = 0;
 
-        boid.acceleration = set_max_acc(BOID_MAX_FORCE, &steering);
+        for &index in candidates.iter() {
+            let other = &boids[index as usize];
+            if other.id == entity_id {
+                continue;
+            }
+
+            let offset = grid.wrap_delta(other.pos - pos);
+            let distance_2 = offset.length_squared();
+            if distance_2 > perception_2 {
+                continue;
+            }
+
+            heading_sum += other.velocity;
+            offset_sum += offset;
+            if distance_2 <= separation_2 {
+                // Weight by 1/distance so the closest crowding dominates;
+                // coincident boids have no direction to flee and are skipped.
+                if let Some(direction) = offset.try_normalize() {
+                    push_away -= direction / distance_2.sqrt();
+                }
+            }
+
+            neighbors += 1;
+            // Hard cap so a pile-up in one cell cannot degenerate into O(N^2).
+            if neighbors >= params.group_size {
+                break;
+            }
+        }
+
+        if neighbors == 0 {
+            boid.acceleration = Vec2::ZERO;
+            continue;
+        }
+
+        let steering = steer_towards(heading_sum, boid.velocity, &params) * params.alignment
+            + steer_towards(offset_sum, boid.velocity, &params) * params.cohesion
+            + steer_towards(push_away, boid.velocity, &params) * params.separation;
+
+        boid.acceleration = set_max_acc(params.max_force, &steering);
     }
 }
 
-/// Reynolds steering: the force that turns `velocity` towards `desired`, capped at BOID_MAX_FORCE.
-fn steer_towards(desired: Vec2, velocity: Vec2) -> Vec2 {
+/// Reynolds steering: the force that turns `velocity` towards `desired`, capped
+/// at `max_force`. Magnitude of `desired` is irrelevant, only its direction.
+fn steer_towards(desired: Vec2, velocity: Vec2, params: &BoidParams) -> Vec2 {
     let Some(direction) = desired.try_normalize() else {
         return Vec2::ZERO;
     };
-    set_max_acc(BOID_MAX_FORCE, &(direction * BOID_MAX_VELOCITY - velocity))
-}
-
-fn boids_alignment(current_boid: &Boid, local_boids: &[Neighbor]) -> Vec2 {
-    if local_boids.is_empty() {
-        return Vec2::ZERO;
-    }
-
-    let mut average_velocity = vec2(0.0, 0.0);
-    for (boid, _) in local_boids.iter() {
-        average_velocity += boid.velocity;
-    }
-
-    steer_towards(average_velocity, current_boid.velocity)
-}
-
-fn boids_cohesion(current_boid: &Boid, pos: Vec2, local_boids: &[Neighbor]) -> Vec2 {
-    if local_boids.is_empty() {
-        return Vec2::ZERO;
-    }
-
-    let mut average_position = vec2(0.0, 0.0);
-    for (boid, _) in local_boids.iter() {
-        average_position += boid.pos;
-    }
-    average_position /= local_boids.len() as f32;
-
-    steer_towards(average_position - pos, current_boid.velocity)
-}
-
-fn boids_separation(current_boid: &Boid, pos: Vec2, local_boids: &[Neighbor]) -> Vec2 {
-    let mut push_away = vec2(0.0, 0.0);
-
-    for (boid, distance_2) in local_boids.iter() {
-        if *distance_2 > BOID_SEPARATION_DISTANCE_2 {
-            continue;
-        }
-        // Weight by 1/distance so the closest crowding dominates; coincident
-        // boids have no direction to flee and are skipped instead of dividing by zero.
-        let Some(direction) = (pos - boid.pos).try_normalize() else {
-            continue;
-        };
-        push_away += direction / distance_2.sqrt();
-    }
-
-    steer_towards(push_away, current_boid.velocity)
+    set_max_acc(
+        params.max_force,
+        &(direction * params.max_velocity - velocity),
+    )
 }
 
 fn set_max_acc(max_acc: f32, acc: &Vec2) -> Vec2 {
