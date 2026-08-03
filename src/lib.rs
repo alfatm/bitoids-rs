@@ -7,7 +7,7 @@ use bevy::{
     window::PrimaryWindow,
     window::{PresentMode, WindowMode, WindowResolution},
 };
-use rand::{thread_rng, Rng};
+use rand::RngExt;
 use std::{f32::consts::FRAC_PI_2, ops::Mul, time::Duration};
 use wasm_bindgen::prelude::*;
 
@@ -62,7 +62,7 @@ struct BoidCounter {
 
 #[inline]
 pub fn random_f32() -> f32 {
-    thread_rng().gen()
+    rand::random()
 }
 
 #[derive(Debug, Component)]
@@ -252,16 +252,16 @@ fn spawn_boids(
     ship_atlas: Res<ShipAtlas>,
     params: &BoidParams,
 ) {
-    let mut rng = thread_rng();
-    let boid_x = rng.gen::<f32>() * window.width() - window.width() / 2.0;
-    let boid_y = rng.gen::<f32>() * window.height() - window.height() / 2.0;
+    let mut rng = rand::rng();
+    let boid_x = rng.random::<f32>() * window.width() - window.width() / 2.0;
+    let boid_y = rng.random::<f32>() * window.height() - window.height() / 2.0;
 
     for count in 0..spawn_count {
         let boid_z = (counter.count + count) as f32 * 0.00001;
         // Scatter the batch: boids sharing one exact position have no separation direction.
         let jitter = vec2(
-            (rng.gen::<f32>() - 0.5) * BOID_SPAWN_JITTER,
-            (rng.gen::<f32>() - 0.5) * BOID_SPAWN_JITTER,
+            (rng.random::<f32>() - 0.5) * BOID_SPAWN_JITTER,
+            (rng.random::<f32>() - 0.5) * BOID_SPAWN_JITTER,
         );
 
         commands.spawn((
@@ -269,7 +269,7 @@ fn spawn_boids(
                 ship_atlas.image.clone(),
                 TextureAtlas {
                     layout: ship_atlas.layout.clone(),
-                    index: rng.gen::<usize>() % (16 * 32),
+                    index: rng.random_range(0..16 * 32),
                 },
             ),
             Anchor::TOP_CENTER,
@@ -281,8 +281,8 @@ fn spawn_boids(
             Boid {
                 acceleration: vec2(random_f32() - 0.5, random_f32() - 0.5),
                 velocity: vec2(
-                    rng.gen::<f32>() * params.max_velocity - (params.max_velocity * 0.5),
-                    rng.gen::<f32>() * params.max_velocity - (params.max_velocity * 0.5),
+                    rng.random::<f32>() * params.max_velocity - (params.max_velocity * 0.5),
+                    rng.random::<f32>() * params.max_velocity - (params.max_velocity * 0.5),
                 ),
             },
         ));

@@ -43,9 +43,9 @@ bevy = {version = "0.19.0", default-features = false, features = [
   "webgl2"
 ]}
 bevy-inspector-egui = {version = "0.37.0", optional = true}
-colored = {version = "2.2", optional = true}
+colored = {version = "3.1", optional = true}
 console_error_panic_hook = "0.1.7"
-getrandom = {version = "0.2", features = ["js"]}
-rand = "0.8.7"
+getrandom = {version = "0.4", features = ["wasm_js"]}
+rand = "0.10.2"
 wasm-bindgen = {version = "0.2", default-features = false}
 wasm-bindgen-futures = "0.4"
